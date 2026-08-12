@@ -673,6 +673,7 @@ dependencies = [
  "digest",
  "eframe",
  "env_logger",
+ "gtk",
  "hex",
  "hmac",
  "image",

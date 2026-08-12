@@ -8,8 +8,18 @@ mod ui;
 
 use std::sync::{mpsc, Arc, Mutex};
 
+#[cfg(target_os = "linux")]
+use gtk::prelude::*;
+#[cfg(target_os = "linux")]
+use gtk;
+
 fn main() {
     env_logger::init();
+
+    #[cfg(target_os = "linux")]
+    {
+        gtk::init().expect("Failed to initialize GTK");
+    }
 
     let db = Arc::new(Mutex::new(
         storage::Database::new().expect("Failed to initialize database"),

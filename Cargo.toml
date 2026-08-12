@@ -57,6 +57,9 @@ anyhow = "1"
 # System tray
 tray-icon = "0.21"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
 # File dialog
 rfd = "0.15"
 
