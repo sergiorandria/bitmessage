@@ -123,7 +123,7 @@ impl PeerManager {
             event_tx,
             db,
             peers: Vec::new(),
-            our_nonce: rand::random(),
+            our_nonce: { use rand::RngCore; rand::rngs::OsRng.next_u64() },
             tor_client: None,
             peer_data_tx,
             peer_data_rx,
@@ -873,6 +873,11 @@ impl PeerManager {
             }
 
             if total_read > buf.len() - 4096 {
+                if buf.len() >= 2 * 1024 * 1024 {
+                    log::warn!("Peer {addr} buffer overflow, disconnecting");
+                    let _ = tx.send(PeerIncoming::Disconnected(addr)).await;
+                    return;
+                }
                 buf.resize(buf.len() + 256 * 1024, 0);
             }
 
@@ -956,7 +961,7 @@ impl PeerManager {
     /// Deliver a message locally (sender == recipient)
     fn deliver_locally(&self, from: &str, to: &str, subject: &str, body: &str) {
         if let Ok(db) = self.db.lock() {
-            let msgid = hex::encode(rand::random::<[u8; 16]>());
+            let msgid = { use rand::RngCore; let mut b=[0u8;16]; rand::rngs::OsRng.fill_bytes(&mut b); hex::encode(b) };
             let _ = db.insert_message(&msgid, from, to, subject, body, 2, "received", "inbox");
         }
 
@@ -1143,7 +1148,7 @@ impl PeerManager {
         self.send_event(NetworkEvent::StatusUpdate("Generating ACK proof of work...".into()));
         let ack_stream = sender.stream_number as u64;
         let ack_expires = unix_time() + DEFAULT_TTL;
-        let ack_random: [u8; 32] = rand::random();
+        let ack_random: [u8; 32] = { use rand::RngCore; let mut b=[0u8;32]; rand::rngs::OsRng.fill_bytes(&mut b); b };
         let ack_obj_header = ObjectHeader {
             nonce: 0,
             expires_time: ack_expires,
@@ -1193,7 +1198,7 @@ impl PeerManager {
             use sha2::{Sha256, Digest as _};
 
             let file_hash: [u8; 32] = Sha256::digest(&att.data).into();
-            let transfer_id: [u8; 16] = rand::random();
+            let transfer_id: [u8; 16] = { use rand::RngCore; let mut b=[0u8;16]; rand::rngs::OsRng.fill_bytes(&mut b); b };
             let chunks = split_file_into_chunks(&att.data);
             let total_chunks = chunks.len() as u64;
 
@@ -1915,7 +1920,7 @@ impl PeerManager {
             return; // Too far in future
         }
 
-        // PoW validation
+        // PoW validation — reject objects with insufficient PoW
         let target = pow::calculate_target(
             data.len() as u64,
             header.expires_time.saturating_sub(now).max(300),
@@ -1923,8 +1928,8 @@ impl PeerManager {
             pow::DEFAULT_EXTRA_BYTES,
         );
         if !pow::check_pow(data, target) {
-            log::debug!("Object failed PoW check");
-            // Don't reject - some objects may have different PoW requirements
+            log::debug!("Object failed PoW check, dropping");
+            return;
         }
 
         // Store in inventory and check state (dedup + processed check)

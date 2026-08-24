@@ -118,8 +118,14 @@ pub fn encode_var_str(s: &str) -> Vec<u8> {
     buf
 }
 
+pub const MAX_VARSTR_LEN: usize = 1 << 20; // 1 MiB
+pub const MAX_VARINT_LIST_LEN: usize = 1024;
+
 pub fn decode_var_str<R: Read>(reader: &mut R) -> Result<String> {
     let len = decode_varint(reader)? as usize;
+    if len > MAX_VARSTR_LEN {
+        return Err(ProtocolError::PayloadTooLarge(len));
+    }
     let mut buf = vec![0u8; len];
     reader.read_exact(&mut buf)?;
     String::from_utf8(buf).map_err(|_| ProtocolError::InvalidCommand("invalid UTF-8".into()))
@@ -135,7 +141,10 @@ pub fn encode_var_int_list(values: &[u64]) -> Vec<u8> {
 
 pub fn decode_var_int_list<R: Read>(reader: &mut R) -> Result<Vec<u64>> {
     let count = decode_varint(reader)? as usize;
-    let mut values = Vec::with_capacity(count.min(1024));
+    if count > MAX_VARINT_LIST_LEN {
+        return Err(ProtocolError::PayloadTooLarge(count));
+    }
+    let mut values = Vec::with_capacity(count);
     for _ in 0..count {
         values.push(decode_varint(reader)?);
     }

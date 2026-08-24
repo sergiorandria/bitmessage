@@ -43,10 +43,15 @@ impl MessageHeader {
 
         let mut cmd_buf = [0u8; 12];
         reader.read_exact(&mut cmd_buf)?;
-        let command = std::str::from_utf8(&cmd_buf)
-            .unwrap_or("")
-            .trim_end_matches('\0')
-            .to_string();
+        // Validate UTF-8 strictly and command characters
+        let raw = String::from_utf8(cmd_buf.to_vec()).map_err(|_| ProtocolError::InvalidCommand("invalid UTF-8 in command".into()))?;
+        let command = raw.trim_end_matches('\0').to_string();
+        if command.is_empty() {
+            return Err(ProtocolError::InvalidCommand("empty command".into()));
+        }
+        if !command.chars().all(|c| c.is_ascii_lowercase()) {
+            return Err(ProtocolError::InvalidCommand(format!("invalid command chars: {command}")));
+        }
 
         let mut len_buf = [0u8; 4];
         reader.read_exact(&mut len_buf)?;
@@ -101,7 +106,7 @@ impl VersionMessage {
             timestamp: chrono::Utc::now().timestamp(),
             addr_recv,
             addr_from: NetworkAddress::localhost(8444),
-            nonce: rand::random(),
+            nonce: { use rand::RngCore; rand::rngs::OsRng.next_u64() },
             user_agent: USER_AGENT.to_string(),
             streams: vec![1],
         }

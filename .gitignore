@@ -2,3 +2,7 @@
 .vscode/
 *.db
 .DS_Store
+.env
+*.log
+/backup/
+/artifacts/

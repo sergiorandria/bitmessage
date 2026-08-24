@@ -2,6 +2,7 @@ use eframe::egui::{self, RichText};
 use super::app::BitmessageApp;
 use super::theme;
 use super::theme::icon;
+use zeroize::Zeroizing;
 
 pub fn render_settings(app: &mut BitmessageApp, ui: &mut egui::Ui) {
     // Header
@@ -160,31 +161,33 @@ pub fn render_settings(app: &mut BitmessageApp, ui: &mut egui::Ui) {
                         if app.session_key.is_none()
                             && ui.add(theme::accent_button("Unlock")).clicked()
                                 && !app.password_input.is_empty() {
-                                    let key = crate::storage::derive_key_from_password(&app.password_input);
-                                    // Verify password by trying to decrypt first identity's raw key
-                                    let valid = if let Ok(db) = app.db.lock() {
-                                        // Read raw keys (no session key set yet, so no auto-decrypt)
-                                        let raw_ok = db.get_identities().ok();
-                                        if let Some(ids) = &raw_ok {
-                                            if let Some(id) = ids.first() {
-                                                if id.signing_key.len() > 32 {
-                                                    crate::storage::simple_decrypt_pub(&key, &id.signing_key).is_ok()
-                                                } else {
-                                                    true
-                                                }
+                                    let pwd = app.password_input.clone();
+                                    let unlock_result = if let Ok(db) = app.db.lock() {
+                                        if let Some(k) = db.try_unlock_password(&pwd) {
+                                            let is_legacy = if let Some(salt) = db.get_kdf_salt() {
+                                                crate::storage::derive_key_argon2id(&pwd, &salt) != k
                                             } else {
                                                 true
-                                            }
+                                            };
+                                            Some((k, is_legacy))
                                         } else {
-                                            false
+                                            None
                                         }
                                     } else {
-                                        false
+                                        None
                                     };
-                                    if valid {
-                                        app.session_key = Some(key);
+                                    if let Some((key, is_legacy)) = unlock_result {
+                                        let mut final_key = key;
+                                        if is_legacy {
+                                            if let Ok(db) = app.db.lock() {
+                                                if let Ok(new_k) = db.migrate_to_argon2id(&pwd, &key) {
+                                                    final_key = new_k;
+                                                }
+                                            }
+                                        }
+                                        app.session_key = Some(Zeroizing::new(final_key));
                                         if let Ok(mut db) = app.db.lock() {
-                                            db.set_session_key(Some(key));
+                                            db.set_session_key(Some(final_key));
                                         }
                                         app.notifications.push((
                                             format!("{} Keys unlocked", icon::CHECK),
@@ -202,11 +205,15 @@ pub fn render_settings(app: &mut BitmessageApp, ui: &mut egui::Ui) {
                         // Remove encryption
                         if ui.add(theme::subtle_button("Remove Encryption")).clicked()
                             && !app.password_input.is_empty() {
-                                let key = crate::storage::derive_key_from_password(&app.password_input);
-                                if let Ok(mut db) = app.db.lock() {
-                                    // Set session key for decryption
-                                    db.set_session_key(Some(key));
-                                    match db.decrypt_private_keys(&key) {
+                                let pwd = app.password_input.clone();
+                                let key_opt = if let Ok(db) = app.db.lock() {
+                                    db.try_unlock_password(&pwd)
+                                } else { None };
+                                if let Some(key) = key_opt {
+                                    if let Ok(mut db) = app.db.lock() {
+                                        // Set session key for decryption
+                                        db.set_session_key(Some(key));
+                                        match db.decrypt_private_keys(&key) {
                                         Ok(()) => {
                                             // Also decrypt all messages
                                             let msg_count = db.decrypt_all_messages().unwrap_or(0);
@@ -227,6 +234,17 @@ pub fn render_settings(app: &mut BitmessageApp, ui: &mut egui::Ui) {
                                             ));
                                         }
                                     }
+                                    } else {
+                                        app.notifications.push((
+                                            format!("{} Unable to open database", icon::DELETE),
+                                            std::time::Instant::now(),
+                                        ));
+                                    }
+                                } else {
+                                    app.notifications.push((
+                                        format!("{} Wrong password", icon::DELETE),
+                                        std::time::Instant::now(),
+                                    ));
                                 }
                                 app.password_input.clear();
                                 app.refresh_data();
@@ -248,12 +266,15 @@ pub fn render_settings(app: &mut BitmessageApp, ui: &mut egui::Ui) {
                     });
                     if ui.add(theme::accent_button("Encrypt Database")).clicked()
                         && !app.password_input.is_empty() {
-                            let key = crate::storage::derive_key_from_password(&app.password_input);
+                            let pwd = app.password_input.clone();
                             if let Ok(mut db) = app.db.lock() {
+                                let key = db.derive_key_for_password(&pwd).unwrap_or_else(|_| {
+                                    crate::storage::derive_key_argon2id(&pwd, b"fallback-encrypt-salt-16b")
+                                });
                                 match db.encrypt_private_keys(&key) {
                                     Ok(()) => {
                                         app.keys_encrypted = true;
-                                        app.session_key = Some(key);
+                                        app.session_key = Some(Zeroizing::new(key));
                                         db.set_session_key(Some(key));
                                         // Also encrypt existing messages
                                         let msg_count = db.encrypt_existing_messages().unwrap_or(0);

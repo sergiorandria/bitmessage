@@ -71,6 +71,12 @@ impl BitmessageAddress {
 
     /// Generate a deterministic address from passphrase (for channels)
     pub fn from_passphrase(passphrase: &str) -> Result<(BitmessageAddress, KeyPair), AddressError> {
+        if passphrase.len() < 4 {
+            return Err(AddressError::Invalid("passphrase too short (min 4 chars)".into()));
+        }
+        if passphrase.len() > 256 {
+            return Err(AddressError::Invalid("passphrase too long".into()));
+        }
         let version = 4u64;
         let stream = 1u64;
 
@@ -79,8 +85,9 @@ impl BitmessageAddress {
         let mut signing_secret = None;
         let mut encryption_secret = None;
 
-        // Find signing key: SHA-512(passphrase + varint(nonce)) until valid
-        for nonce in 0u64.. {
+        // Find signing key: SHA-512(passphrase + varint(nonce)) until valid, bounded attempts
+        const MAX_NONCE_ATTEMPTS: u64 = 1_000_000;
+        for nonce in 0u64..MAX_NONCE_ATTEMPTS {
             let mut data = passphrase_bytes.to_vec();
             data.extend(encode_varint(nonce));
             let hash = Sha512::digest(&data);
@@ -119,13 +126,20 @@ impl BitmessageAddress {
 
     /// Decode an encoded Bitmessage address string
     pub fn decode(address: &str) -> Result<Self, AddressError> {
-        let addr = address.strip_prefix("BM-").unwrap_or(address);
+        let trimmed = address.trim();
+        if trimmed.len() > 64 {
+            return Err(AddressError::Invalid("address too long".into()));
+        }
+        let addr = trimmed.strip_prefix("BM-").unwrap_or(trimmed);
         let data = bs58::decode(addr)
             .into_vec()
             .map_err(|e| AddressError::Invalid(format!("Base58 decode: {e}")))?;
 
         if data.len() < 6 {
             return Err(AddressError::Invalid("too short".into()));
+        }
+        if data.len() > 64 {
+            return Err(AddressError::Invalid("decoded too long".into()));
         }
 
         // Last 4 bytes are checksum
@@ -142,8 +156,14 @@ impl BitmessageAddress {
         let mut r = std::io::Cursor::new(payload);
         let version =
             crate::protocol::types::decode_varint(&mut r).map_err(|e| AddressError::Invalid(e.to_string()))?;
+        if version > 4 || version == 0 {
+            return Err(AddressError::Invalid(format!("unsupported version {version}")));
+        }
         let stream =
             crate::protocol::types::decode_varint(&mut r).map_err(|e| AddressError::Invalid(e.to_string()))?;
+        if stream != 1 {
+            return Err(AddressError::Invalid(format!("unsupported stream {stream}")));
+        }
 
         let pos = r.position() as usize;
         let ripe_data = &payload[pos..];
@@ -151,6 +171,9 @@ impl BitmessageAddress {
         // Restore leading zeros (RIPEMD-160 produces 20 bytes)
         if ripe_data.len() > 20 {
             return Err(AddressError::Invalid("RIPE data exceeds 20 bytes".into()));
+        }
+        if ripe_data.is_empty() {
+            return Err(AddressError::Invalid("RIPE data empty".into()));
         }
         let mut ripe = vec![0u8; 20 - ripe_data.len()];
         ripe.extend_from_slice(ripe_data);

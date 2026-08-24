@@ -70,9 +70,15 @@ impl EncryptedPayload {
         pos += 16;
 
         let curve_type = u16::from_be_bytes([data[pos], data[pos + 1]]);
+        if curve_type != CURVE_TYPE {
+            return Err(EciesError::MalformedCiphertext);
+        }
         pos += 2;
 
         let x_len = u16::from_be_bytes([data[pos], data[pos + 1]]) as usize;
+        if x_len != 32 {
+            return Err(EciesError::MalformedCiphertext);
+        }
         pos += 2;
         if pos + x_len > data.len() {
             return Err(EciesError::MalformedCiphertext);
@@ -84,6 +90,9 @@ impl EncryptedPayload {
             return Err(EciesError::MalformedCiphertext);
         }
         let y_len = u16::from_be_bytes([data[pos], data[pos + 1]]) as usize;
+        if y_len != 32 {
+            return Err(EciesError::MalformedCiphertext);
+        }
         pos += 2;
         if pos + y_len > data.len() {
             return Err(EciesError::MalformedCiphertext);
@@ -96,6 +105,9 @@ impl EncryptedPayload {
         }
 
         let ciphertext = data[pos..data.len() - 32].to_vec();
+        if ciphertext.is_empty() || ciphertext.len() % 16 != 0 {
+            return Err(EciesError::MalformedCiphertext);
+        }
         let mut mac = [0u8; 32];
         mac.copy_from_slice(&data[data.len() - 32..]);
 
@@ -112,7 +124,7 @@ impl EncryptedPayload {
 
 /// Encrypt plaintext using recipient's public key (ECIES)
 pub fn encrypt(recipient_pubkey: &PublicKey, plaintext: &[u8]) -> Result<Vec<u8>, EciesError> {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rngs::OsRng;
 
     // Generate random IV
     let mut iv = [0u8; 16];
@@ -221,15 +233,19 @@ pub fn decrypt(secret_key: &SecretKey, data: &[u8]) -> Result<Vec<u8>, EciesErro
     Ok(plaintext)
 }
 
-/// Left-pad bytes to 32 bytes with zeros
+/// Left-pad bytes to 32 bytes with zeros; input must be <=32, otherwise truncate is error but we handle strictly
 fn pad_to_32(input: &[u8]) -> Vec<u8> {
-    if input.len() >= 32 {
-        input[input.len() - 32..].to_vec()
-    } else {
-        let mut padded = vec![0u8; 32 - input.len()];
-        padded.extend_from_slice(input);
-        padded
+    if input.len() == 32 {
+        return input.to_vec();
     }
+    if input.len() > 32 {
+        // Truncation should not happen if caller validates; return error case as truncated tail for compat but log
+        log::warn!("pad_to_32 received oversized input {}", input.len());
+        return input[input.len() - 32..].to_vec();
+    }
+    let mut padded = vec![0u8; 32 - input.len()];
+    padded.extend_from_slice(input);
+    padded
 }
 
 #[cfg(test)]
@@ -238,7 +254,7 @@ mod tests {
 
     #[test]
     fn test_encrypt_decrypt_roundtrip() {
-        let sk = SecretKey::random(&mut rand::thread_rng());
+        let sk = SecretKey::random(&mut rand::rngs::OsRng);
         let pk = sk.public_key();
 
         let plaintext = b"Hello, Bitmessage!";

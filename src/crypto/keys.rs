@@ -5,6 +5,7 @@ use k256::{
 };
 use rand::rngs::OsRng;
 use thiserror::Error;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 #[derive(Debug, Error)]
 pub enum KeyError {
@@ -17,10 +18,11 @@ pub enum KeyError {
 }
 
 /// A Bitmessage identity keypair: signing key + encryption key
-#[derive(Clone)]
+/// Secrets are zeroized on drop via `Zeroizing`.
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct KeyPair {
-    pub signing_secret: Vec<u8>,
-    pub encryption_secret: Vec<u8>,
+    pub signing_secret: Zeroizing<Vec<u8>>,
+    pub encryption_secret: Zeroizing<Vec<u8>>,
     pub public_signing_key: [u8; 64],   // uncompressed, without 0x04 prefix
     pub public_encryption_key: [u8; 64], // uncompressed, without 0x04 prefix
 }
@@ -66,8 +68,8 @@ impl KeyPair {
         pub_encryption.copy_from_slice(&encryption_point.as_bytes()[1..65]);
 
         Ok(Self {
-            signing_secret: signing,
-            encryption_secret: encryption,
+            signing_secret: Zeroizing::new(signing),
+            encryption_secret: Zeroizing::new(encryption),
             public_signing_key: pub_signing,
             public_encryption_key: pub_encryption,
         })

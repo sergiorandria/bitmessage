@@ -1,5 +1,6 @@
 use eframe::egui::{self, Color32, RichText, TextureHandle};
 use std::sync::{mpsc, Arc, Mutex};
+use zeroize::Zeroizing;
 
 use crate::network::{NetworkCommand, NetworkEvent};
 use crate::storage::*;
@@ -134,8 +135,8 @@ pub struct BitmessageApp {
     /// True when app needs password before showing main UI
     pub needs_unlock: bool,
     pub unlock_error: String,
-    /// Stored password hash for decrypting keys in memory during the session
-    pub session_key: Option<[u8; 32]>,
+    /// Stored password hash for decrypting keys in memory during the session (zeroized on drop)
+    pub session_key: Option<Zeroizing<[u8; 32]>>,
 }
 
 impl BitmessageApp {
@@ -632,30 +633,39 @@ impl eframe::App for BitmessageApp {
                         ).clicked();
 
                         if (unlock_clicked || enter_pressed) && !self.password_input.is_empty() {
-                            let key = crate::storage::derive_key_from_password(&self.password_input);
-                            // Verify password
-                            let valid = if let Ok(db) = self.db.lock() {
-                                if let Ok(ids) = db.get_identities() {
-                                    if let Some(id) = ids.first() {
-                                        if id.signing_key.len() > 32 {
-                                            crate::storage::simple_decrypt_pub(&key, &id.signing_key).is_ok()
-                                        } else {
-                                            true
-                                        }
+                            let pwd = self.password_input.clone();
+                            let (valid, derived_key, needs_migration, old_key_for_migrate) = if let Ok(db) = self.db.lock() {
+                                if let Some(k) = db.try_unlock_password(&pwd) {
+                                    // Detect legacy KDF: if Argon2id with current salt differs, then old key was used
+                                    let is_legacy = if let Some(salt) = db.get_kdf_salt() {
+                                        let expected = crate::storage::derive_key_argon2id(&pwd, &salt);
+                                        expected != k
                                     } else {
+                                        // No salt yet => legacy DB
                                         true
-                                    }
+                                    };
+                                    (true, k, is_legacy, if is_legacy { Some(k) } else { None })
                                 } else {
-                                    false
+                                    (false, [0u8;32], false, None)
                                 }
                             } else {
-                                false
+                                (false, [0u8;32], false, None)
                             };
 
                             if valid {
-                                self.session_key = Some(key);
+                                let mut final_key = derived_key;
+                                // Migrate legacy KDF to Argon2id if needed
+                                if needs_migration {
+                                    if let (Some(old), Ok(db)) = (old_key_for_migrate, self.db.lock()) {
+                                        if let Ok(new_k) = db.migrate_to_argon2id(&pwd, &old) {
+                                            final_key = new_k;
+                                            log::info!("Migrated DB encryption from legacy KDF to Argon2id");
+                                        }
+                                    }
+                                }
+                                self.session_key = Some(Zeroizing::new(final_key));
                                 if let Ok(mut db) = self.db.lock() {
-                                    db.set_session_key(Some(key));
+                                    db.set_session_key(Some(final_key));
                                 }
                                 self.needs_unlock = false;
                                 self.unlock_error.clear();

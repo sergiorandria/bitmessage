@@ -4,6 +4,7 @@ use rusqlite::{Connection, params};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use thiserror::Error;
+use zeroize::Zeroizing;
 
 #[derive(Debug, Error)]
 pub enum DbError {
@@ -133,8 +134,8 @@ pub struct ExportedIdentity {
 
 pub struct Database {
     conn: Connection,
-    /// Session key for decrypting private keys in memory
-    session_key: Option<[u8; 32]>,
+    /// Session key for decrypting private keys in memory (zeroized on drop)
+    session_key: Option<Zeroizing<[u8; 32]>>,
 }
 
 impl Database {
@@ -142,8 +143,18 @@ impl Database {
         let path = Self::db_path();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+            }
         }
         let conn = Connection::open(&path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
         conn.execute_batch("
             PRAGMA journal_mode=WAL;
             PRAGMA synchronous=NORMAL;
@@ -1291,19 +1302,30 @@ impl Database {
             Some(a) => a,
             None => return Ok(None),
         };
+        if att.total_size > 10 * 1024 * 1024 || att.total_chunks > 64 || att.total_size < 0 || att.total_chunks <= 0 {
+            log::warn!("Attachment {} has invalid size/chunks, aborting", hex::encode(transfer_id));
+            return Ok(None);
+        }
         if att.received_chunks < att.total_chunks {
             return Ok(None); // Not all chunks received yet
         }
 
         let mut stmt = self.conn.prepare(
             "SELECT chunk_data FROM attachment_chunks
-             WHERE transfer_id = ?1 ORDER BY chunk_index ASC",
+              WHERE transfer_id = ?1 ORDER BY chunk_index ASC",
         )?;
         let chunks: Vec<Vec<u8>> = stmt.query_map(params![transfer_id], |row| {
             row.get::<_, Vec<u8>>(0)
         })?.filter_map(|r| r.ok()).collect();
 
-        let mut file_data = Vec::with_capacity(att.total_size as usize);
+        let mut file_data = Vec::new();
+        if att.total_size as usize > 10 * 1024 * 1024 {
+            return Ok(None);
+        }
+        if file_data.try_reserve(att.total_size as usize).is_err() {
+            log::warn!("Failed to reserve memory for attachment reassembly");
+            return Ok(None);
+        }
         for chunk in &chunks {
             file_data.extend_from_slice(chunk);
         }
@@ -1468,14 +1490,14 @@ impl Database {
         self.get_setting("keys_encrypted").map(|v| v == "1").unwrap_or(false)
     }
 
-    /// Set session key for in-memory decryption of private keys
+    /// Set session key for in-memory decryption of private keys (zeroized on drop)
     pub fn set_session_key(&mut self, key: Option<[u8; 32]>) {
-        self.session_key = key;
+        self.session_key = key.map(Zeroizing::new);
     }
 
     /// Get current session key
     pub fn session_key(&self) -> Option<&[u8; 32]> {
-        self.session_key.as_ref()
+        self.session_key.as_ref().map(|k| k as &[u8; 32])
     }
 
     /// Decrypt private key bytes in memory if session key is set and key is encrypted
@@ -1580,24 +1602,47 @@ impl Database {
     }
 }
 
-/// Simple AES-256-CBC encryption with random IV
+/// Derive HMAC key from encryption key (second 16 bytes -> expand via HMAC)
+fn hmac_key_for(key: &[u8; 32]) -> [u8; 32] {
+    use sha2::{Sha256, Digest};
+    let mut hasher = Sha256::new();
+    hasher.update(key);
+    hasher.update(b"bitmessage-rs-hmac");
+    let r = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&r);
+    out
+}
+
+/// Authenticated AES-256-CBC + HMAC-SHA256 (Encrypt-then-MAC)
+/// Output: IV (16) || ciphertext || HMAC-SHA256(32) over IV||ciphertext
 fn simple_encrypt(key: &[u8; 32], plaintext: &[u8]) -> Vec<u8> {
     use aes::cipher::{BlockEncryptMut, KeyIvInit};
     use cipher::block_padding::Pkcs7;
+    use hmac::{Hmac, Mac};
+    use rand::RngCore;
     type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
+    type HmacSha256 = Hmac<sha2::Sha256>;
 
-    let iv: [u8; 16] = rand::random();
+    let mut iv = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut iv);
     let encryptor = Aes256CbcEnc::new(key.into(), &iv.into());
     let mut buffer = vec![0u8; plaintext.len() + 16]; // room for padding
     buffer[..plaintext.len()].copy_from_slice(plaintext);
     let ciphertext = encryptor.encrypt_padded_mut::<Pkcs7>(&mut buffer, plaintext.len()).unwrap();
-    let mut result = Vec::with_capacity(16 + ciphertext.len());
+    // HMAC over IV || ciphertext
+    let hk = hmac_key_for(key);
+    let mut mac = HmacSha256::new_from_slice(&hk).expect("HMAC key valid");
+    mac.update(&iv);
+    mac.update(ciphertext);
+    let tag = mac.finalize().into_bytes();
+    let mut result = Vec::with_capacity(16 + ciphertext.len() + 32);
     result.extend_from_slice(&iv);
     result.extend_from_slice(ciphertext);
+    result.extend_from_slice(&tag);
     result
 }
 
-/// Simple AES-256-CBC decryption
 /// Public wrapper for in-memory key decryption
 pub fn simple_decrypt_pub(key: &[u8; 32], data: &[u8]) -> Result<Vec<u8>, &'static str> {
     simple_decrypt(key, data)
@@ -1606,22 +1651,305 @@ pub fn simple_decrypt_pub(key: &[u8; 32], data: &[u8]) -> Result<Vec<u8>, &'stat
 fn simple_decrypt(key: &[u8; 32], data: &[u8]) -> Result<Vec<u8>, &'static str> {
     use aes::cipher::{BlockDecryptMut, KeyIvInit};
     use cipher::block_padding::Pkcs7;
+    use hmac::{Hmac, Mac};
     type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
+    type HmacSha256 = Hmac<sha2::Sha256>;
 
-    if data.len() < 17 { // at least IV + 1 block
+    if data.len() < 16 + 16 + 32 { // IV + at least 1 block + MAC
         return Err("data too short");
     }
-    let iv = &data[..16];
-    let ciphertext = &data[16..];
-    let decryptor = Aes256CbcDec::new(key.into(), iv.into());
-    let mut buffer = ciphertext.to_vec();
-    let plaintext = decryptor.decrypt_padded_mut::<Pkcs7>(&mut buffer)
-        .map_err(|_| "decryption failed")?;
-    Ok(plaintext.to_vec())
+    // Detect legacy unauthenticated format (IV||CT without MAC) and fall back
+    // legacy_len = data.len() -16 is multiple of 16 if no MAC; with MAC it's IV||CT||MAC where CT+16 multiple? We try MAC check first.
+    if data.len() >= 16 + 32 {
+        let iv = &data[..16];
+        let maybe_tag = &data[data.len()-32..];
+        let ciphertext = &data[16..data.len()-32];
+        if ciphertext.len() % 16 == 0 && !ciphertext.is_empty() {
+            let hk = hmac_key_for(key);
+            let mut mac = HmacSha256::new_from_slice(&hk).expect("HMAC key valid");
+            mac.update(iv);
+            mac.update(ciphertext);
+            if mac.verify_slice(maybe_tag).is_ok() {
+                let decryptor = Aes256CbcDec::new(key.into(), iv.into());
+                let mut buffer = ciphertext.to_vec();
+                let plaintext = decryptor.decrypt_padded_mut::<Pkcs7>(&mut buffer)
+                    .map_err(|_| "decryption failed")?;
+                return Ok(plaintext.to_vec());
+            }
+        }
+    }
+    // Fallback: legacy unauthenticated decrypt (for migration)
+    if data.len() >= 17 && (data.len() -16) % 16 == 0 {
+        let iv = &data[..16];
+        let ciphertext = &data[16..];
+        // Only allow legacy if it doesn't look like it has a MAC (or MAC failed)
+        // To avoid accepting tampered legacy, still try decrypt but log
+        let decryptor = Aes256CbcDec::new(key.into(), iv.into());
+        let mut buffer = ciphertext.to_vec();
+        if let Ok(pt) = decryptor.decrypt_padded_mut::<Pkcs7>(&mut buffer) {
+            log::warn!("Decrypted legacy (unauthenticated) DB value — will be re-encrypted on next write");
+            return Ok(pt.to_vec());
+        }
+    }
+    Err("decryption failed (HMAC mismatch)")
 }
 
-/// Derive a 32-byte key from a password using SHA-256
+/// Derive a 32-byte key using Argon2id with per-DB random salt.
+/// Parameters: m=19456 KiB (19 MiB), t=2, p=1, output 32 bytes.
+/// This is the primary KDF; per-DB salt is stored hex-encoded under `kdf_salt`.
+pub fn derive_key_argon2id(password: &str, salt: &[u8]) -> [u8; 32] {
+    use argon2::{Algorithm, Argon2, Params, Version};
+    // OWASP recommended: m=19456, t=2, p=1 for Argon2id
+    let params = Params::new(19_456, 2, 1, Some(32)).expect("argon2 params valid");
+    let ctx = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    let mut out = [0u8; 32];
+    ctx.hash_password_into(password.as_bytes(), salt, &mut out)
+        .expect("argon2 hashing should succeed");
+    out
+}
+
+/// Get the per-DB KDF salt if it exists (hex-decoded).
+pub fn get_kdf_salt_from_settings(conn: &rusqlite::Connection) -> Option<Vec<u8>> {
+    let hex_str: String = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'kdf_salt'",
+            [],
+            |r| r.get(0),
+        )
+        .ok()?;
+    hex::decode(hex_str.trim()).ok().filter(|v| v.len() >= 16)
+}
+
+impl Database {
+    /// Retrieve the per-DB KDF salt, generating and persisting a new random 16-byte salt if missing.
+    pub fn get_or_create_kdf_salt(&self) -> Result<Vec<u8>, DbError> {
+        if let Some(s) = self.get_kdf_salt() {
+            return Ok(s);
+        }
+        // Generate fresh 16-byte salt
+        use rand::RngCore;
+        let mut salt = [0u8; 16];
+        rand::rngs::OsRng.fill_bytes(&mut salt);
+        let hex_salt = hex::encode(salt);
+        self.set_setting("kdf_salt", &hex_salt)?;
+        Ok(salt.to_vec())
+    }
+
+    /// Non-persisting getter: returns existing salt if present.
+    pub fn get_kdf_salt(&self) -> Option<Vec<u8>> {
+        let s = self.get_setting("kdf_salt")?;
+        hex::decode(s.trim()).ok().filter(|v| v.len() >= 16)
+    }
+
+    /// Derive Argon2id key using the database's per-DB salt (creates salt if missing).
+    pub fn derive_key_for_password(&self, password: &str) -> Result<[u8; 32], DbError> {
+        let salt = self.get_or_create_kdf_salt()?;
+        Ok(derive_key_argon2id(password, &salt))
+    }
+
+    /// Attempt to verify a password against stored encrypted material.
+    /// Tries Argon2id with current salt first, then legacy 200k SHA-256 and single-SHA256 fallbacks.
+    /// Returns the successful key if any, otherwise None.
+    pub fn try_unlock_password(&self, password: &str) -> Option<[u8; 32]> {
+        // Candidate 1: Argon2id with per-DB salt (if salt exists)
+        if let Some(salt) = self.get_kdf_salt() {
+            let k = derive_key_argon2id(password, &salt);
+            if self.is_password_valid_for_key(&k) {
+                return Some(k);
+            }
+        } else {
+            // No salt yet (old DB) — generate candidate via Argon2id using fresh? Don't persist yet; just try legacy.
+            // But we still try to see if Argon2id with deterministic fallback salt would match?
+            // For old DBs, we must try legacy KDFs.
+        }
+        // Candidate 2: iterated SHA-256 v2 (200k)
+        let k2 = derive_key_sha256_iter(password, None);
+        if self.is_password_valid_for_key(&k2) {
+            return Some(k2);
+        }
+        let k2s = derive_key_sha256_iter(password, Some(b"bitmessage-rs-key-derivation-v2"));
+        if k2s != k2 && self.is_password_valid_for_key(&k2s) {
+            return Some(k2s);
+        }
+        // Candidate 3: legacy single SHA-256
+        let k3 = derive_legacy_key(password);
+        if self.is_password_valid_for_key(&k3) {
+            return Some(k3);
+        }
+        None
+    }
+
+    /// Check if a key can decrypt at least one stored encrypted value (or DB empty).
+    fn is_password_valid_for_key(&self, key: &[u8; 32]) -> bool {
+        // If there are identities with encrypted keys (len > 32), try to decrypt one
+        if let Ok(ids) = self.get_identities_raw() {
+            for id in &ids {
+                if id.signing_key.len() > 32 {
+                    if simple_decrypt(key, &id.signing_key).is_ok() {
+                        return true;
+                    } else {
+                        // If any encrypted identity fails to decrypt, password is wrong
+                        return false;
+                    }
+                }
+            }
+            // No encrypted identities — try decrypting an encrypted message subject if any
+            if let Some(enc) = self.get_any_encrypted_message_sample() {
+                if enc.strip_prefix("ENC:").is_some() {
+                    if let Some(stripped) = enc.strip_prefix("ENC:") {
+                        if let Ok(bytes) = hex::decode(stripped) {
+                            if simple_decrypt(key, &bytes).is_ok() {
+                                return true;
+                            } else {
+                                return false;
+                            }
+                        }
+                    }
+                }
+            }
+            // No encrypted data to verify — assume password valid if DB not empty or empty
+            return true;
+        }
+        false
+    }
+
+    /// Raw identities without auto-decryption (for password verification)
+    fn get_identities_raw(&self) -> Result<Vec<StoredIdentity>, DbError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, label, address, signing_key, encryption_key,
+             pub_signing_key, pub_encryption_key, address_version, stream_number,
+             enabled, nonce_trials, extra_bytes, created_at FROM identities ORDER BY id LIMIT 1",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(StoredIdentity {
+                id: row.get(0)?,
+                label: row.get(1)?,
+                address: row.get(2)?,
+                signing_key: row.get(3)?,
+                encryption_key: row.get(4)?,
+                pub_signing_key: row.get(5)?,
+                pub_encryption_key: row.get(6)?,
+                address_version: row.get(7)?,
+                stream_number: row.get(8)?,
+                enabled: row.get::<_, i64>(9)? != 0,
+                nonce_trials: row.get(10)?,
+                extra_bytes: row.get(11)?,
+                created_at: row.get(12)?,
+            })
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    fn get_any_encrypted_message_sample(&self) -> Option<String> {
+        self.conn
+            .query_row(
+                "SELECT subject FROM messages WHERE subject LIKE 'ENC:%' LIMIT 1",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .ok()
+    }
+
+    /// Migrate an old-KDF encrypted DB to Argon2id after successful unlock with legacy key.
+    /// Generates a fresh per-DB salt, derives new Argon2id key, re-encrypts keys and messages.
+    pub fn migrate_to_argon2id(&self, password: &str, old_key: &[u8; 32]) -> Result<[u8; 32], DbError> {
+        // Generate fresh salt
+        use rand::RngCore;
+        let mut new_salt = [0u8; 16];
+        rand::rngs::OsRng.fill_bytes(&mut new_salt);
+        let new_key = derive_key_argon2id(password, &new_salt);
+        // Re-encrypt private keys: decrypt with old_key, encrypt with new_key
+        let mut stmt = self.conn.prepare("SELECT id, signing_key, encryption_key FROM identities")?;
+        let rows: Vec<(i64, Vec<u8>, Vec<u8>)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
+        for (id, sk, ek) in rows {
+            let dec_sk = if sk.len() > 32 {
+                simple_decrypt(old_key, &sk).unwrap_or(sk.clone())
+            } else {
+                sk.clone()
+            };
+            let dec_ek = if ek.len() > 32 {
+                simple_decrypt(old_key, &ek).unwrap_or(ek.clone())
+            } else {
+                ek.clone()
+            };
+            // Only re-encrypt if they were encrypted
+            if sk.len() > 32 || ek.len() > 32 {
+                let new_sk = simple_encrypt(&new_key, &dec_sk);
+                let new_ek = simple_encrypt(&new_key, &dec_ek);
+                self.conn.execute(
+                    "UPDATE identities SET signing_key = ?1, encryption_key = ?2 WHERE id = ?3",
+                    params![new_sk, new_ek, id],
+                )?;
+            }
+        }
+        // Re-encrypt messages: decrypt subjects/bodies with old_key, re-encrypt with new_key
+        let mut stmt2 = self.conn.prepare("SELECT id, subject, body FROM messages WHERE subject LIKE 'ENC:%'")?;
+        let mrows: Vec<(i64, String, String)> = stmt2
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
+        for (id, subj, body) in mrows {
+            let dec_subj = Self::decrypt_text_with_key(&subj, old_key).unwrap_or(subj.clone());
+            let dec_body = Self::decrypt_text_with_key(&body, old_key).unwrap_or(body.clone());
+            let new_subj = format!("ENC:{}", hex::encode(simple_encrypt(&new_key, dec_subj.as_bytes())));
+            let new_body = format!("ENC:{}", hex::encode(simple_encrypt(&new_key, dec_body.as_bytes())));
+            self.conn.execute(
+                "UPDATE messages SET subject = ?1, body = ?2 WHERE id = ?3",
+                params![new_subj, new_body, id],
+            )?;
+        }
+        // Persist new salt
+        self.set_setting("kdf_salt", &hex::encode(new_salt))?;
+        Ok(new_key)
+    }
+
+    fn decrypt_text_with_key(text: &str, key: &[u8; 32]) -> Option<String> {
+        let stripped = text.strip_prefix("ENC:")?;
+        let bytes = hex::decode(stripped).ok()?;
+        let dec = simple_decrypt(key, &bytes).ok()?;
+        String::from_utf8(dec).ok()
+    }
+}
+
+/// Legacy: 200k-iteration SHA-256 chain (kept for migration)
+fn derive_key_sha256_iter(password: &str, salt_override: Option<&[u8]>) -> [u8; 32] {
+    use sha2::{Sha256, Digest};
+    const ITERATIONS: usize = 200_000;
+    let salt: Vec<u8> = if let Some(s) = salt_override {
+        s.to_vec()
+    } else {
+        b"bitmessage-rs-key-derivation-v2".to_vec()
+    };
+    let mut hasher = Sha256::new();
+    hasher.update(password.as_bytes());
+    hasher.update(&salt);
+    let mut cur = hasher.finalize().to_vec();
+    for i in 1..ITERATIONS {
+        let mut h = Sha256::new();
+        h.update(&cur);
+        h.update(password.as_bytes());
+        h.update((i as u32).to_be_bytes());
+        cur = h.finalize().to_vec();
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&cur[..32]);
+    out
+}
+
+/// Derive a 32-byte key from a password using iterated SHA-256 with salt
+/// Deprecated: use `derive_key_argon2id` with per-DB salt via `Database::derive_key_for_password`.
 pub fn derive_key_from_password(password: &str) -> [u8; 32] {
+    derive_key_sha256_iter(password, None)
+}
+
+pub fn derive_key_with_salt(password: &str, salt: &[u8]) -> [u8; 32] {
+    derive_key_sha256_iter(password, Some(salt))
+}
+
+pub fn derive_legacy_key(password: &str) -> [u8; 32] {
     use sha2::{Sha256, Digest};
     let mut hasher = Sha256::new();
     hasher.update(password.as_bytes());

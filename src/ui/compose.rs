@@ -208,9 +208,14 @@ pub fn render_compose(app: &mut BitmessageApp, ui: &mut egui::Ui) {
                         )).clicked() {
                             if let Some(path) = rfd::FileDialog::new().pick_file() {
                                 if let Ok(data) = std::fs::read(&path) {
-                                    let filename = path.file_name()
+                                    let filename_raw = path.file_name()
                                         .map(|n| n.to_string_lossy().to_string())
                                         .unwrap_or_else(|| "file".into());
+                                    // Sanitize filename: strip path separators, limit length, allowlist chars
+                                    let mut filename: String = filename_raw.chars().filter(|c| !c.is_control() && *c != '/' && *c != '\\').collect();
+                                    filename = filename.trim().to_string();
+                                    if filename.is_empty() { filename = "file".into(); }
+                                    if filename.len() > 255 { filename.truncate(255); }
                                     let mime_type = mime_from_ext(&filename);
                                     let size = data.len();
                                     if size > 10 * 1024 * 1024 {
@@ -301,7 +306,7 @@ fn send_message(app: &mut BitmessageApp) {
     };
 
     // Generate msgid and store in DB first
-    let msgid = hex::encode(rand::random::<[u8; 16]>());
+    let msgid = { use rand::RngCore; let mut b=[0u8;16]; rand::rngs::OsRng.fill_bytes(&mut b); hex::encode(b) };
     if let Ok(db) = app.db.lock() {
         let to = if app.compose.is_broadcast {
             "[Broadcast]"

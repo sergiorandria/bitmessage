@@ -147,10 +147,20 @@ impl PubKeyData {
 
         let nonce_trials_per_byte = decode_varint(&mut r)?;
         let extra_bytes = decode_varint(&mut r)?;
+        if nonce_trials_per_byte > 100_000_000 || extra_bytes > 100_000_000 {
+            return Err(ProtocolError::PayloadTooLarge(extra_bytes as usize));
+        }
 
         let sig_offset = r.position() as usize;
 
         let sig_len = decode_varint(&mut r)? as usize;
+        if sig_len > 1024 {
+            return Err(ProtocolError::PayloadTooLarge(sig_len));
+        }
+        let remaining = data.len().saturating_sub(r.position() as usize);
+        if sig_len > remaining {
+            return Err(ProtocolError::Io(io::Error::new(io::ErrorKind::InvalidData, "sig_len exceeds remaining")));
+        }
         let mut signature = vec![0u8; sig_len];
         r.read_exact(&mut signature)?;
 
@@ -296,7 +306,13 @@ impl UnencryptedMessage {
         let mut r = Cursor::new(data);
 
         let sender_address_version = decode_varint(&mut r)?;
+        if sender_address_version > 4 {
+            return Err(ProtocolError::InvalidCommand(format!("unsupported address version {sender_address_version}")));
+        }
         let sender_stream = decode_varint(&mut r)?;
+        if sender_stream != 1 {
+            return Err(ProtocolError::InvalidCommand(format!("unsupported stream {sender_stream}")));
+        }
 
         let mut bf = [0u8; 4];
         r.read_exact(&mut bf)?;
@@ -312,24 +328,30 @@ impl UnencryptedMessage {
         if sender_address_version >= 3 {
             nonce_trials = decode_varint(&mut r)?;
             extra_bytes = decode_varint(&mut r)?;
+            if nonce_trials > 100_000_000 || extra_bytes > 100_000_000 {
+                return Err(ProtocolError::PayloadTooLarge(extra_bytes as usize));
+            }
         }
 
         let mut ripe = [0u8; 20];
         r.read_exact(&mut ripe)?;
 
         let encoding = decode_varint(&mut r)?;
-        let remaining = data.len() - r.position() as usize;
+        if encoding > 3 {
+            return Err(ProtocolError::InvalidCommand(format!("unsupported encoding {encoding}")));
+        }
+        let remaining = data.len().saturating_sub(r.position() as usize);
         let msg_len = decode_varint(&mut r)? as usize;
-        if msg_len > remaining {
-            return Err(ProtocolError::Io(io::Error::new(io::ErrorKind::InvalidData, format!("msg_len {msg_len} exceeds remaining {remaining}"))));
+        if msg_len > MAX_OBJECT_PAYLOAD_SIZE || msg_len > remaining {
+            return Err(ProtocolError::Io(io::Error::new(io::ErrorKind::InvalidData, format!("msg_len {msg_len} exceeds limit or remaining {remaining}"))));
         }
         let mut message = vec![0u8; msg_len];
         r.read_exact(&mut message)?;
 
-        let remaining = data.len() - r.position() as usize;
+        let remaining = data.len().saturating_sub(r.position() as usize);
         let ack_len = decode_varint(&mut r)? as usize;
-        if ack_len > remaining {
-            return Err(ProtocolError::Io(io::Error::new(io::ErrorKind::InvalidData, format!("ack_len {ack_len} exceeds remaining {remaining}"))));
+        if ack_len > MAX_OBJECT_PAYLOAD_SIZE || ack_len > remaining {
+            return Err(ProtocolError::Io(io::Error::new(io::ErrorKind::InvalidData, format!("ack_len {ack_len} exceeds limit or remaining {remaining}"))));
         }
         let mut ack_data = vec![0u8; ack_len];
         r.read_exact(&mut ack_data)?;
@@ -337,10 +359,10 @@ impl UnencryptedMessage {
         // Record position before signature — this is the boundary for signature verification
         let sig_offset = r.position() as usize;
 
-        let remaining = data.len() - r.position() as usize;
+        let remaining = data.len().saturating_sub(r.position() as usize);
         let sig_len = decode_varint(&mut r)? as usize;
-        if sig_len > remaining {
-            return Err(ProtocolError::Io(io::Error::new(io::ErrorKind::InvalidData, format!("sig_len {sig_len} exceeds remaining {remaining}"))));
+        if sig_len > 1024 || sig_len > remaining {
+            return Err(ProtocolError::Io(io::Error::new(io::ErrorKind::InvalidData, format!("sig_len {sig_len} exceeds limit or remaining {remaining}"))));
         }
         let mut signature = vec![0u8; sig_len];
         r.read_exact(&mut signature)?;
@@ -367,7 +389,13 @@ impl UnencryptedMessage {
         let mut r = Cursor::new(data);
 
         let sender_address_version = decode_varint(&mut r)?;
+        if sender_address_version > 4 {
+            return Err(ProtocolError::InvalidCommand(format!("unsupported address version {sender_address_version}")));
+        }
         let sender_stream = decode_varint(&mut r)?;
+        if sender_stream != 1 {
+            return Err(ProtocolError::InvalidCommand(format!("unsupported stream {sender_stream}")));
+        }
 
         let mut bf = [0u8; 4];
         r.read_exact(&mut bf)?;
@@ -383,23 +411,29 @@ impl UnencryptedMessage {
         if sender_address_version >= 3 {
             nonce_trials = decode_varint(&mut r)?;
             extra_bytes = decode_varint(&mut r)?;
+            if nonce_trials > 100_000_000 || extra_bytes > 100_000_000 {
+                return Err(ProtocolError::PayloadTooLarge(extra_bytes as usize));
+            }
         }
 
         let encoding = decode_varint(&mut r)?;
-        let remaining = data.len() - r.position() as usize;
+        if encoding > 3 {
+            return Err(ProtocolError::InvalidCommand(format!("unsupported encoding {encoding}")));
+        }
+        let remaining = data.len().saturating_sub(r.position() as usize);
         let msg_len = decode_varint(&mut r)? as usize;
-        if msg_len > remaining {
-            return Err(ProtocolError::Io(io::Error::new(io::ErrorKind::InvalidData, format!("broadcast msg_len {msg_len} exceeds remaining {remaining}"))));
+        if msg_len > MAX_OBJECT_PAYLOAD_SIZE || msg_len > remaining {
+            return Err(ProtocolError::Io(io::Error::new(io::ErrorKind::InvalidData, format!("broadcast msg_len {msg_len} exceeds limit or remaining {remaining}"))));
         }
         let mut message = vec![0u8; msg_len];
         r.read_exact(&mut message)?;
 
         let sig_offset = r.position() as usize;
 
-        let remaining = data.len() - r.position() as usize;
+        let remaining = data.len().saturating_sub(r.position() as usize);
         let sig_len = decode_varint(&mut r)? as usize;
-        if sig_len > remaining {
-            return Err(ProtocolError::Io(io::Error::new(io::ErrorKind::InvalidData, format!("broadcast sig_len {sig_len} exceeds remaining data {remaining}"))));
+        if sig_len > 1024 || sig_len > remaining {
+            return Err(ProtocolError::Io(io::Error::new(io::ErrorKind::InvalidData, format!("broadcast sig_len {sig_len} exceeds limit or remaining data {remaining}"))));
         }
         let mut signature = vec![0u8; sig_len];
         r.read_exact(&mut signature)?;
@@ -559,6 +593,9 @@ impl ExtendedMessage {
         for _ in 0..num_parts {
             let part_type = decode_varint(&mut r)?;
             let part_len = decode_varint(&mut r)? as usize;
+            if part_len > MAX_OBJECT_PAYLOAD_SIZE {
+                return Err(ProtocolError::PayloadTooLarge(part_len));
+            }
             let pos = r.position() as usize;
             if pos + part_len > data.len() {
                 return Err(ProtocolError::Io(io::Error::new(
@@ -578,15 +615,34 @@ impl ExtendedMessage {
                     let mut transfer_id = [0u8; 16];
                     pr.read_exact(&mut transfer_id)?;
                     let filename = decode_var_str(&mut pr)?;
+                    if filename.len() > 1024 {
+                        return Err(ProtocolError::PayloadTooLarge(filename.len()));
+                    }
                     let mime_type = decode_var_str(&mut pr)?;
+                    if mime_type.len() > 256 {
+                        return Err(ProtocolError::PayloadTooLarge(mime_type.len()));
+                    }
                     let mut size_buf = [0u8; 8];
                     pr.read_exact(&mut size_buf)?;
                     let total_size = u64::from_be_bytes(size_buf);
+                    if total_size > 10 * 1024 * 1024 {
+                        return Err(ProtocolError::PayloadTooLarge(total_size as usize));
+                    }
                     let mut sha256_hash = [0u8; 32];
                     pr.read_exact(&mut sha256_hash)?;
                     let total_chunks = decode_varint(&mut pr)?;
+                    if total_chunks > 64 {
+                        return Err(ProtocolError::PayloadTooLarge(total_chunks as usize));
+                    }
                     let chunk_index = decode_varint(&mut pr)?;
                     let chunk_len = decode_varint(&mut pr)? as usize;
+                    if chunk_len > FILE_CHUNK_SIZE + 1024 {
+                        return Err(ProtocolError::PayloadTooLarge(chunk_len));
+                    }
+                    let remaining = part_data.len().saturating_sub(pr.position() as usize);
+                    if chunk_len > remaining {
+                        return Err(ProtocolError::Io(io::Error::new(io::ErrorKind::InvalidData, "chunk_len exceeds remaining")));
+                    }
                     let mut chunk_data = vec![0u8; chunk_len];
                     pr.read_exact(&mut chunk_data)?;
                     MessagePart::FileManifest {
@@ -600,6 +656,13 @@ impl ExtendedMessage {
                     pr.read_exact(&mut transfer_id)?;
                     let chunk_index = decode_varint(&mut pr)?;
                     let chunk_len = decode_varint(&mut pr)? as usize;
+                    if chunk_len > FILE_CHUNK_SIZE + 1024 {
+                        return Err(ProtocolError::PayloadTooLarge(chunk_len));
+                    }
+                    let remaining = part_data.len().saturating_sub(pr.position() as usize);
+                    if chunk_len > remaining {
+                        return Err(ProtocolError::Io(io::Error::new(io::ErrorKind::InvalidData, "chunk_len exceeds remaining")));
+                    }
                     let mut chunk_data = vec![0u8; chunk_len];
                     pr.read_exact(&mut chunk_data)?;
                     MessagePart::FileChunk { transfer_id, chunk_index, chunk_data }
