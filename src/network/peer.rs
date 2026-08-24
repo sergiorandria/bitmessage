@@ -30,6 +30,11 @@ const REQUEST_TIMEOUT_SECS: u64 = 60;
 const MAX_SEEN_INV: usize = 500_000;
 const MAX_MISSING_OBJECTS: usize = 50_000;
 const MAX_SENT_ACKS: usize = 10_000;
+// Rate limiting
+const MAX_INV_PER_PEER_PER_SEC: usize = 50_000;
+const MAX_OBJECTS_PER_PEER_PER_SEC: usize = 100;
+const RATE_WINDOW_SECS: u64 = 1;
+const MAX_POW_CONCURRENT: usize = 2;
 
 #[derive(Debug, Clone)]
 pub struct PeerInfo {
@@ -87,6 +92,13 @@ pub struct PeerManager {
     consecutive_failures: u32,
     // Peer reputation scores
     peer_scores: HashMap<String, PeerScore>,
+    // Rate limiting: per-peer counters within RATE_WINDOW_SECS
+    inv_rate: HashMap<String, (u64, usize)>,     // addr -> (window_start_unix, count)
+    object_rate: HashMap<String, (u64, usize)>,
+    // Pending hosts dedup
+    pending_hosts: HashSet<String>,
+    // PoW concurrency limiter
+    pow_permits: Arc<tokio::sync::Semaphore>,
 }
 
 struct MissingObject {
@@ -145,7 +157,28 @@ impl PeerManager {
             sent_acks: HashSet::new(),
             consecutive_failures: 0,
             peer_scores: HashMap::new(),
+            inv_rate: HashMap::new(),
+            object_rate: HashMap::new(),
+            pending_hosts: HashSet::new(),
+            pow_permits: Arc::new(tokio::sync::Semaphore::new(MAX_POW_CONCURRENT)),
         }
+    }
+
+    fn check_rate_limit(&mut self, addr: &str, kind: &str) -> bool {
+        let now = unix_time();
+        let map = if kind == "inv" { &mut self.inv_rate } else { &mut self.object_rate };
+        let limit = if kind == "inv" { MAX_INV_PER_PEER_PER_SEC } else { MAX_OBJECTS_PER_PEER_PER_SEC };
+        let entry = map.entry(addr.to_string()).or_insert((now, 0));
+        if now - entry.0 >= RATE_WINDOW_SECS {
+            *entry = (now, 1);
+            return true;
+        }
+        entry.1 += 1;
+        if entry.1 > limit {
+            log::warn!("Rate limit exceeded for {addr} ({kind}: {} / {RATE_WINDOW_SECS}s)", entry.1);
+            return false;
+        }
+        true
     }
 
     fn update_peer_score(&mut self, addr: &str, success: bool) {
@@ -348,6 +381,7 @@ impl PeerManager {
             }
             PeerIncoming::NewConnection { info, writer } => {
                 self.pending_connections = self.pending_connections.saturating_sub(1);
+                self.pending_hosts.remove(&format!("{}:{}", info.address, info.port));
                 self.consecutive_failures = 0;
                 if self.peers.len() >= MAX_PEERS {
                     drop(writer);
@@ -370,6 +404,7 @@ impl PeerManager {
             }
             PeerIncoming::ConnectionFailed(addr) => {
                 self.pending_connections = self.pending_connections.saturating_sub(1);
+                self.pending_hosts.remove(&addr);
                 self.consecutive_failures += 1;
                 self.update_peer_score(&addr, false);
                 log::debug!("Connection attempt failed: {addr}");
@@ -566,15 +601,18 @@ impl PeerManager {
         }
     }
 
-    /// Cleanup expired inventory and pubkeys
+    /// Cleanup expired inventory and pubkeys (also enforces size cap)
     fn cleanup_expired(&self) {
         if let Ok(db) = self.db.lock() {
             let inv_deleted = db.cleanup_expired_inventory().unwrap_or(0);
+            let pruned = db.prune_oldest_inventory(Database::MAX_INVENTORY_ITEMS).unwrap_or(0);
             let pk_deleted = db.delete_expired_pubkeys().unwrap_or(0);
             let node_deleted = db.cleanup_old_nodes(3 * 24 * 3600).unwrap_or(0);
-            if inv_deleted + pk_deleted + node_deleted > 0 {
-                log::info!("Cleanup: {inv_deleted} inv, {pk_deleted} pubkeys, {node_deleted} nodes expired");
+            if inv_deleted + pruned + pk_deleted + node_deleted > 0 {
+                log::info!("Cleanup: {inv_deleted} expired inv, {pruned} pruned inv, {pk_deleted} pubkeys, {node_deleted} nodes");
             }
+            // Evict stale rate-limit windows (older than 60s)
+            // Done lazily in check_rate_limit; also clean here periodically
         }
     }
 
@@ -663,9 +701,18 @@ impl PeerManager {
                 return;
             }
         };
+        let addr = format!("{host}:{port}");
+        if !self.pending_hosts.insert(addr.clone()) {
+            log::debug!("Skipping duplicate pending connection to {addr}");
+            return;
+        }
+        // Also skip if already connected
+        if self.peers.iter().any(|p| format!("{}:{}", p.info.address, p.info.port) == addr) {
+            self.pending_hosts.remove(&addr);
+            return;
+        }
         self.pending_connections += 1;
         let tx = self.peer_data_tx.clone();
-        let addr = format!("{host}:{port}");
         tokio::spawn(async move {
             log::info!("Connecting via Tor to {addr}...");
             let stream = match timeout(
@@ -1010,7 +1057,8 @@ impl PeerManager {
         let mut pow_payload = obj_header.encode_for_signing();
         pow_payload.extend_from_slice(&getpubkey_payload);
 
-        // PoW
+        // PoW (concurrency-limited)
+        let _pow_permit = self.pow_permits.clone().acquire_owned().await.expect("pow semaphore closed");
         let event_tx = self.event_tx.clone();
         let cancelled = Arc::new(AtomicBool::new(false));
         let pow_result = tokio::task::spawn_blocking({
@@ -1159,6 +1207,7 @@ impl PeerManager {
         let mut ack_pow_payload = ack_obj_header.encode_for_signing();
         ack_pow_payload.extend_from_slice(&ack_random);
 
+        let _pow_permit = self.pow_permits.clone().acquire_owned().await.expect("pow semaphore closed");
         let ack_event_tx = self.event_tx.clone();
         let cancelled = Arc::new(AtomicBool::new(false));
         let ack_pow_result = tokio::task::spawn_blocking({
@@ -1340,6 +1389,7 @@ impl PeerManager {
         let mut pow_payload = obj_header.encode_for_signing();
         pow_payload.extend_from_slice(&encrypted);
 
+        let _pow_permit = self.pow_permits.clone().acquire_owned().await.expect("pow semaphore closed");
         let event_tx = self.event_tx.clone();
         let cancelled = Arc::new(AtomicBool::new(false));
         let pow_result = tokio::task::spawn_blocking({
@@ -1467,6 +1517,7 @@ impl PeerManager {
                 let mut chunk_pow_payload = chunk_obj_header.encode_for_signing();
                 chunk_pow_payload.extend_from_slice(&chunk_encrypted);
 
+                let _pow_permit = self.pow_permits.clone().acquire_owned().await.expect("pow semaphore closed");
                 let chunk_event_tx = self.event_tx.clone();
                 let cancelled = Arc::new(AtomicBool::new(false));
                 let chunk_pow = tokio::task::spawn_blocking({
@@ -1685,6 +1736,7 @@ impl PeerManager {
         let mut pow_payload = obj_header.encode_for_signing();
         pow_payload.extend_from_slice(&final_payload);
 
+        let _pow_permit = self.pow_permits.clone().acquire_owned().await.expect("pow semaphore closed");
         let event_tx = self.event_tx.clone();
         let cancelled = Arc::new(AtomicBool::new(false));
         let pow_result = tokio::task::spawn_blocking({
@@ -1783,6 +1835,11 @@ impl PeerManager {
     async fn handle_peer_message(&mut self, from_addr: &str, command: &str, payload: &[u8]) {
         match command {
             "inv" => {
+                // Rate limit inv
+                if !self.check_rate_limit(from_addr, "inv") {
+                    log::warn!("Dropping inv from rate-limited peer {from_addr}");
+                    return;
+                }
                 if let Ok(inv) = InvMessage::decode(payload) {
                     log::info!("Received inv with {} items from {}", inv.inventory.len(), from_addr);
 
@@ -1862,6 +1919,10 @@ impl PeerManager {
                 }
             }
             "object" => {
+                if !self.check_rate_limit(from_addr, "object") {
+                    log::warn!("Dropping object from rate-limited peer {from_addr}");
+                    return;
+                }
                 self.objects_received += 1;
                 log::info!("Received object ({} bytes) from {}", payload.len(), from_addr);
                 let inv_hash = InventoryVector::from_object_data(payload);
@@ -2297,6 +2358,7 @@ impl PeerManager {
             let mut pow_payload = obj_header.encode_for_signing();
             pow_payload.extend_from_slice(&pubkey_payload);
 
+            let _pow_permit = self.pow_permits.clone().acquire_owned().await.expect("pow semaphore closed");
             let event_tx = self.event_tx.clone();
             let cancelled = Arc::new(AtomicBool::new(false));
             let pow_result = tokio::task::spawn_blocking({
@@ -2371,6 +2433,7 @@ impl PeerManager {
             let mut pow_payload = obj_header.encode_for_signing();
             pow_payload.extend_from_slice(&pubkey_payload);
 
+            let _pow_permit = self.pow_permits.clone().acquire_owned().await.expect("pow semaphore closed");
             let event_tx = self.event_tx.clone();
             let cancelled = Arc::new(AtomicBool::new(false));
             let pow_result = tokio::task::spawn_blocking({

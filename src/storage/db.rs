@@ -902,6 +902,11 @@ impl Database {
         payload: &[u8],
         expires_time: u64,
     ) -> Result<(), DbError> {
+        // Enforce inventory size cap before insert (prune synchronously to bound disk)
+        // Cheap count check; prune only if near cap to avoid per-insert overhead.
+        if self.inventory_count().unwrap_or(0) >= Self::MAX_INVENTORY_ITEMS {
+            let _ = self.prune_oldest_inventory(Self::MAX_INVENTORY_ITEMS - 10_000);
+        }
         let now = chrono::Utc::now().timestamp();
         self.conn.execute(
             "INSERT OR IGNORE INTO inventory (hash, object_type, stream_number, payload, expires_time, received_at, processed)
@@ -977,6 +982,28 @@ impl Database {
             "DELETE FROM inventory WHERE expires_time < ?1",
             params![now],
         )?;
+        Ok(deleted)
+    }
+
+    /// Inventory size cap — prune oldest entries when DB grows beyond limit.
+    /// Keeps at most MAX_INVENTORY_ITEMS (oldest expires_time / received_at first).
+    pub const MAX_INVENTORY_ITEMS: i64 = 200_000;
+
+    pub fn prune_oldest_inventory(&self, max_items: i64) -> Result<usize, DbError> {
+        let count = self.inventory_count().unwrap_or(0);
+        if count <= max_items {
+            return Ok(0);
+        }
+        let to_delete = count - max_items;
+        let deleted = self.conn.execute(
+            "DELETE FROM inventory WHERE hash IN (
+                SELECT hash FROM inventory ORDER BY expires_time ASC, received_at ASC LIMIT ?1
+            )",
+            params![to_delete],
+        )?;
+        if deleted > 0 {
+            log::info!("Pruned {deleted} oldest inventory entries (cap {max_items}, was {count})");
+        }
         Ok(deleted)
     }
 
