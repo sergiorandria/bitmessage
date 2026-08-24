@@ -33,6 +33,8 @@ const MAX_SENT_ACKS: usize = 10_000;
 // Rate limiting
 const MAX_INV_PER_PEER_PER_SEC: usize = 50_000;
 const MAX_OBJECTS_PER_PEER_PER_SEC: usize = 100;
+const MAX_GETDATA_PER_PEER_PER_SEC: usize = 1_000;
+const MAX_ADDR_PER_PEER_PER_SEC: usize = 10;
 const RATE_WINDOW_SECS: u64 = 1;
 const MAX_POW_CONCURRENT: usize = 2;
 
@@ -61,7 +63,7 @@ pub struct PeerManager {
     peers: Vec<ConnectedPeer>,
     our_nonce: u64,
     // Tor client — all connections routed through Tor
-    tor_client: Option<TorClient<PreferredRuntime>>,
+    tor_client: Option<Arc<TorClient<PreferredRuntime>>>,
     // Incoming data from peer read tasks
     peer_data_tx: tokio::sync::mpsc::Sender<PeerIncoming>,
     peer_data_rx: tokio::sync::mpsc::Receiver<PeerIncoming>,
@@ -93,8 +95,7 @@ pub struct PeerManager {
     // Peer reputation scores
     peer_scores: HashMap<String, PeerScore>,
     // Rate limiting: per-peer counters within RATE_WINDOW_SECS
-    inv_rate: HashMap<String, (u64, usize)>,     // addr -> (window_start_unix, count)
-    object_rate: HashMap<String, (u64, usize)>,
+    rate_limits: HashMap<String, [(u64, usize); 4]>, // addr -> [inv, object, getdata, addr] windows
     // Pending hosts dedup
     pending_hosts: HashSet<String>,
     // PoW concurrency limiter
@@ -157,25 +158,34 @@ impl PeerManager {
             sent_acks: HashSet::new(),
             consecutive_failures: 0,
             peer_scores: HashMap::new(),
-            inv_rate: HashMap::new(),
-            object_rate: HashMap::new(),
+            rate_limits: HashMap::new(),
             pending_hosts: HashSet::new(),
             pow_permits: Arc::new(tokio::sync::Semaphore::new(MAX_POW_CONCURRENT)),
         }
     }
 
-    fn check_rate_limit(&mut self, addr: &str, kind: &str) -> bool {
+    /// Per-peer sliding-window rate limit.
+    /// kind: 0=inv, 1=object, 2=getdata, 3=addr
+    fn check_rate_limit(&mut self, addr: &str, kind: usize) -> bool {
+        const LIMITS: [usize; 4] = [
+            MAX_INV_PER_PEER_PER_SEC,
+            MAX_OBJECTS_PER_PEER_PER_SEC,
+            MAX_GETDATA_PER_PEER_PER_SEC,
+            MAX_ADDR_PER_PEER_PER_SEC,
+        ];
+        const NAMES: [&str; 4] = ["inv", "object", "getdata", "addr"];
         let now = unix_time();
-        let map = if kind == "inv" { &mut self.inv_rate } else { &mut self.object_rate };
-        let limit = if kind == "inv" { MAX_INV_PER_PEER_PER_SEC } else { MAX_OBJECTS_PER_PEER_PER_SEC };
-        let entry = map.entry(addr.to_string()).or_insert((now, 0));
-        if now - entry.0 >= RATE_WINDOW_SECS {
-            *entry = (now, 1);
+        let entry = self.rate_limits
+            .entry(addr.to_string())
+            .or_insert([now; 4].map(|t| (t, 0)));
+        let slot = &mut entry[kind];
+        if now - slot.0 >= RATE_WINDOW_SECS {
+            *slot = (now, 1);
             return true;
         }
-        entry.1 += 1;
-        if entry.1 > limit {
-            log::warn!("Rate limit exceeded for {addr} ({kind}: {} / {RATE_WINDOW_SECS}s)", entry.1);
+        slot.1 += 1;
+        if slot.1 > LIMITS[kind] {
+            log::warn!("Rate limit exceeded for {addr} ({}: {} / {RATE_WINDOW_SECS}s)", NAMES[kind], slot.1);
             return false;
         }
         true
@@ -202,7 +212,7 @@ impl PeerManager {
     }
 
     /// Bootstrap the Tor client
-    async fn bootstrap_tor() -> anyhow::Result<TorClient<PreferredRuntime>> {
+    async fn bootstrap_tor() -> anyhow::Result<Arc<TorClient<PreferredRuntime>>> {
         let config = TorClientConfig::default();
         let client = TorClient::create_bootstrapped(config).await?;
         Ok(client)
@@ -1836,7 +1846,7 @@ impl PeerManager {
         match command {
             "inv" => {
                 // Rate limit inv
-                if !self.check_rate_limit(from_addr, "inv") {
+                if !self.check_rate_limit(from_addr, 0) {
                     log::warn!("Dropping inv from rate-limited peer {from_addr}");
                     return;
                 }
@@ -1902,6 +1912,11 @@ impl PeerManager {
                 }
             }
             "getdata" => {
+                // Rate limit getdata — each item triggers a DB lookup + object send
+                if !self.check_rate_limit(from_addr, 2) {
+                    log::warn!("Dropping getdata from rate-limited peer {from_addr}");
+                    return;
+                }
                 // Respond with objects from our inventory
                 if let Ok(getdata) = GetDataMessage::decode(payload) {
                     // Collect all objects first, then send
@@ -1919,7 +1934,7 @@ impl PeerManager {
                 }
             }
             "object" => {
-                if !self.check_rate_limit(from_addr, "object") {
+                if !self.check_rate_limit(from_addr, 1) {
                     log::warn!("Dropping object from rate-limited peer {from_addr}");
                     return;
                 }
@@ -1931,6 +1946,11 @@ impl PeerManager {
                 self.handle_object(payload).await;
             }
             "addr" => {
+                // Rate limit addr — floods would poison our known_nodes table
+                if !self.check_rate_limit(from_addr, 3) {
+                    log::warn!("Dropping addr from rate-limited peer {from_addr}");
+                    return;
+                }
                 // Store received addresses as known nodes
                 if let Ok(addr_msg) = AddrMessage::decode(payload) {
                     if let Ok(db) = self.db.lock() {

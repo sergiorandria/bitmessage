@@ -86,5 +86,5 @@ gtk = "0.18"
 rfd = "0.15"
 
 # Tor
-arti-client = { version = "0.40", features = ["tokio", "native-tls"] }
-tor-rtcompat = { version = "0.40", features = ["tokio"] }
+arti-client = { version = "0.45", features = ["tokio", "native-tls"] }
+tor-rtcompat = { version = "0.45", features = ["tokio"] }
