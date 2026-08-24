@@ -249,12 +249,12 @@ pub fn render_bbcode(ui: &mut egui::Ui, text: &str) {
             color,
             italics: span.italic,
             underline: if span.underline {
-                egui::Stroke::new(1.0, color)
+                egui::Stroke::new(1.0_f32, color)
             } else {
                 egui::Stroke::NONE
             },
             strikethrough: if span.strikethrough {
-                egui::Stroke::new(1.0, color)
+                egui::Stroke::new(1.0_f32, color)
             } else {
                 egui::Stroke::NONE
             },
@@ -332,7 +332,7 @@ fn toolbar_btn(ui: &mut egui::Ui, label: &str, bold: bool, italic: bool) -> bool
     ui.add(
         egui::Button::new(rt)
             .fill(theme::BG_SURFACE)
-            .stroke(egui::Stroke::new(0.5, theme::BORDER_LIGHT))
+            .stroke(egui::Stroke::new(0.5_f32, theme::BORDER_LIGHT))
             .rounding(4.0)
             .min_size(egui::vec2(26.0, 22.0)),
     )
@@ -344,7 +344,7 @@ fn toolbar_btn_underline(ui: &mut egui::Ui, label: &str) -> bool {
     ui.add(
         egui::Button::new(rt)
             .fill(theme::BG_SURFACE)
-            .stroke(egui::Stroke::new(0.5, theme::BORDER_LIGHT))
+            .stroke(egui::Stroke::new(0.5_f32, theme::BORDER_LIGHT))
             .rounding(4.0)
             .min_size(egui::vec2(26.0, 22.0)),
     )
@@ -356,7 +356,7 @@ fn toolbar_btn_strike(ui: &mut egui::Ui, label: &str) -> bool {
     ui.add(
         egui::Button::new(rt)
             .fill(theme::BG_SURFACE)
-            .stroke(egui::Stroke::new(0.5, theme::BORDER_LIGHT))
+            .stroke(egui::Stroke::new(0.5_f32, theme::BORDER_LIGHT))
             .rounding(4.0)
             .min_size(egui::vec2(26.0, 22.0)),
     )
@@ -368,7 +368,7 @@ fn toolbar_btn_colored(ui: &mut egui::Ui, label: &str, color: Color32) -> bool {
     ui.add(
         egui::Button::new(rt)
             .fill(theme::BG_SURFACE)
-            .stroke(egui::Stroke::new(0.5, theme::BORDER_LIGHT))
+            .stroke(egui::Stroke::new(0.5_f32, theme::BORDER_LIGHT))
             .rounding(4.0)
             .min_size(egui::vec2(26.0, 22.0)),
     )

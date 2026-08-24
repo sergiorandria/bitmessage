@@ -1,5 +1,5 @@
 use k256::{
-    ecdsa::{SigningKey, VerifyingKey, Signature, signature::Signer},
+    ecdsa::{SigningKey, VerifyingKey, Signature},
     SecretKey, PublicKey,
     elliptic_curve::sec1::ToEncodedPoint,
 };

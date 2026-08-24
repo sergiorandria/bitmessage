@@ -112,7 +112,7 @@ pub fn render_settings(app: &mut BitmessageApp, ui: &mut egui::Ui) {
                 inner_margin: egui::Margin::symmetric(20.0, 12.0),
                 rounding: egui::Rounding::same(8.0),
                 outer_margin: egui::Margin::symmetric(16.0, 4.0),
-                stroke: egui::Stroke::new(0.5, theme::BORDER),
+                stroke: egui::Stroke::new(0.5_f32, theme::BORDER),
                 ..Default::default()
             }
             .show(ui, |ui| {
@@ -157,9 +157,9 @@ pub fn render_settings(app: &mut BitmessageApp, ui: &mut egui::Ui) {
                     });
                     ui.horizontal(|ui| {
                         // Unlock button (if not yet unlocked)
-                        if app.session_key.is_none() {
-                            if ui.add(theme::accent_button("Unlock")).clicked() {
-                                if !app.password_input.is_empty() {
+                        if app.session_key.is_none()
+                            && ui.add(theme::accent_button("Unlock")).clicked()
+                                && !app.password_input.is_empty() {
                                     let key = crate::storage::derive_key_from_password(&app.password_input);
                                     // Verify password by trying to decrypt first identity's raw key
                                     let valid = if let Ok(db) = app.db.lock() {
@@ -199,11 +199,9 @@ pub fn render_settings(app: &mut BitmessageApp, ui: &mut egui::Ui) {
                                     }
                                     app.password_input.clear();
                                 }
-                            }
-                        }
                         // Remove encryption
-                        if ui.add(theme::subtle_button("Remove Encryption")).clicked() {
-                            if !app.password_input.is_empty() {
+                        if ui.add(theme::subtle_button("Remove Encryption")).clicked()
+                            && !app.password_input.is_empty() {
                                 let key = crate::storage::derive_key_from_password(&app.password_input);
                                 if let Ok(mut db) = app.db.lock() {
                                     // Set session key for decryption
@@ -233,7 +231,6 @@ pub fn render_settings(app: &mut BitmessageApp, ui: &mut egui::Ui) {
                                 app.password_input.clear();
                                 app.refresh_data();
                             }
-                        }
                     });
                 } else {
                     ui.label(
@@ -249,8 +246,8 @@ pub fn render_settings(app: &mut BitmessageApp, ui: &mut egui::Ui) {
                             .hint_text("Enter password")
                             .desired_width(200.0));
                     });
-                    if ui.add(theme::accent_button("Encrypt Database")).clicked() {
-                        if !app.password_input.is_empty() {
+                    if ui.add(theme::accent_button("Encrypt Database")).clicked()
+                        && !app.password_input.is_empty() {
                             let key = crate::storage::derive_key_from_password(&app.password_input);
                             if let Ok(mut db) = app.db.lock() {
                                 match db.encrypt_private_keys(&key) {
@@ -276,7 +273,6 @@ pub fn render_settings(app: &mut BitmessageApp, ui: &mut egui::Ui) {
                             app.password_input.clear();
                             app.refresh_data();
                         }
-                    }
                 }
             });
 
@@ -558,14 +554,13 @@ pub fn render_network_status(app: &mut BitmessageApp, ui: &mut egui::Ui) {
                     ui.label(
                         RichText::new(app.trash.len().to_string()).size(13.0),
                     );
-                    if !app.trash.is_empty() {
-                        if ui.add(theme::subtle_button(&theme::icon_text(icon::DELETE, "Empty Trash"))).clicked() {
+                    if !app.trash.is_empty()
+                        && ui.add(theme::subtle_button(&theme::icon_text(icon::DELETE, "Empty Trash"))).clicked() {
                             if let Ok(db) = app.db.lock() {
                                 let _ = db.empty_trash();
                             }
                             app.refresh_data();
                         }
-                    }
                 });
             });
 
@@ -613,7 +608,7 @@ fn settings_section(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut eg
         inner_margin: egui::Margin::symmetric(20.0, 16.0),
         rounding: egui::Rounding::same(8.0),
         outer_margin: egui::Margin::symmetric(16.0, 4.0),
-        stroke: egui::Stroke::new(0.5, theme::BORDER),
+        stroke: egui::Stroke::new(0.5_f32, theme::BORDER),
         ..Default::default()
     }
     .show(ui, |ui| {

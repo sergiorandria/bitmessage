@@ -28,7 +28,7 @@ pub fn render_compose(app: &mut BitmessageApp, ui: &mut egui::Ui) {
                 inner_margin: egui::Margin::symmetric(24.0, 20.0),
                 rounding: egui::Rounding::same(8.0),
                 outer_margin: egui::Margin::symmetric(16.0, 0.0),
-                stroke: egui::Stroke::new(0.5, theme::BORDER),
+                stroke: egui::Stroke::new(0.5_f32, theme::BORDER),
                 ..Default::default()
             }
             .show(ui, |ui| {
@@ -160,7 +160,7 @@ pub fn render_compose(app: &mut BitmessageApp, ui: &mut egui::Ui) {
                         fill: theme::BG_DARKEST,
                         inner_margin: egui::Margin::symmetric(16.0, 12.0),
                         rounding: egui::Rounding::same(6.0),
-                        stroke: egui::Stroke::new(0.5, theme::BORDER),
+                        stroke: egui::Stroke::new(0.5_f32, theme::BORDER),
                         ..Default::default()
                     }
                     .show(ui, |ui| {
@@ -241,7 +241,7 @@ pub fn render_compose(app: &mut BitmessageApp, ui: &mut egui::Ui) {
                                 .color(theme::ACCENT)
                                 .size(12.0),
                             );
-                            if ui.add(theme::subtle_button(&icon::DELETE.to_string())).clicked() {
+                            if ui.add(theme::subtle_button(icon::DELETE)).clicked() {
                                 app.compose.attached_file = None;
                             }
                         }
@@ -416,7 +416,7 @@ fn mode_toggle(ui: &mut egui::Ui, visual_mode: &mut bool) {
 
     // Outer pill background
     painter.rect_filled(rect, rounding, theme::BG_DARKEST);
-    painter.rect_stroke(rect, rounding, egui::Stroke::new(0.5, theme::BORDER_LIGHT));
+    painter.rect_stroke(rect, rounding, egui::Stroke::new(0.5_f32, theme::BORDER_LIGHT));
 
     // Active segment highlight
     let active_rect = if *visual_mode {
@@ -459,6 +459,6 @@ fn mode_toggle(ui: &mut egui::Ui, visual_mode: &mut bool) {
     let mid_x = rect.min.x + half;
     painter.line_segment(
         [egui::pos2(mid_x, rect.min.y + 5.0), egui::pos2(mid_x, rect.max.y - 5.0)],
-        egui::Stroke::new(0.5, theme::BORDER_LIGHT),
+        egui::Stroke::new(0.5_f32, theme::BORDER_LIGHT),
     );
 }

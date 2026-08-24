@@ -121,41 +121,41 @@ pub fn apply_theme(ctx: &egui::Context) {
 
     // Widgets - noninteractive (labels, separators)
     visuals.widgets.noninteractive.bg_fill = BG_SURFACE;
-    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, TEXT_SECONDARY);
-    visuals.widgets.noninteractive.bg_stroke = Stroke::new(0.5, BORDER);
+    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, TEXT_SECONDARY);
+    visuals.widgets.noninteractive.bg_stroke = Stroke::new(0.5_f32, BORDER);
     visuals.widgets.noninteractive.rounding = Rounding::same(6.0);
 
     // Widgets - inactive (buttons at rest)
     visuals.widgets.inactive.bg_fill = BG_SURFACE;
-    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT_PRIMARY);
-    visuals.widgets.inactive.bg_stroke = Stroke::new(0.5, BORDER_LIGHT);
+    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, TEXT_PRIMARY);
+    visuals.widgets.inactive.bg_stroke = Stroke::new(0.5_f32, BORDER_LIGHT);
     visuals.widgets.inactive.rounding = Rounding::same(6.0);
 
     // Widgets - hovered
     visuals.widgets.hovered.bg_fill = BG_HOVER;
-    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, TEXT_PRIMARY);
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, ACCENT_MUTED);
+    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, TEXT_PRIMARY);
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, ACCENT_MUTED);
     visuals.widgets.hovered.rounding = Rounding::same(6.0);
 
     // Widgets - active (pressed)
     visuals.widgets.active.bg_fill = ACCENT;
-    visuals.widgets.active.fg_stroke = Stroke::new(1.0, TEXT_ON_ACCENT);
-    visuals.widgets.active.bg_stroke = Stroke::new(1.0, ACCENT_HOVER);
+    visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, TEXT_ON_ACCENT);
+    visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, ACCENT_HOVER);
     visuals.widgets.active.rounding = Rounding::same(6.0);
 
     // Widgets - open (dropdown etc)
     visuals.widgets.open.bg_fill = BG_HOVER;
-    visuals.widgets.open.fg_stroke = Stroke::new(1.0, TEXT_PRIMARY);
-    visuals.widgets.open.bg_stroke = Stroke::new(1.0, ACCENT_MUTED);
+    visuals.widgets.open.fg_stroke = Stroke::new(1.0_f32, TEXT_PRIMARY);
+    visuals.widgets.open.bg_stroke = Stroke::new(1.0_f32, ACCENT_MUTED);
     visuals.widgets.open.rounding = Rounding::same(6.0);
 
     // Selection
     visuals.selection.bg_fill = ACCENT_DIM;
-    visuals.selection.stroke = Stroke::new(1.0, ACCENT);
+    visuals.selection.stroke = Stroke::new(1.0_f32, ACCENT);
 
     // Windows
     visuals.window_rounding = Rounding::same(10.0);
-    visuals.window_stroke = Stroke::new(1.0, BORDER_LIGHT);
+    visuals.window_stroke = Stroke::new(1.0_f32, BORDER_LIGHT);
     visuals.window_shadow = egui::epaint::Shadow {
         offset: egui::vec2(0.0, 4.0),
         blur: 16.0,
@@ -185,7 +185,7 @@ pub fn card_frame() -> egui::Frame {
         rounding: Rounding::same(10.0),
         inner_margin: Margin::same(14.0),
         outer_margin: Margin::symmetric(16.0, 3.0),
-        stroke: Stroke::new(0.5, BORDER_LIGHT),
+        stroke: Stroke::new(0.5_f32, BORDER_LIGHT),
         shadow: egui::epaint::Shadow::NONE,
     }
 }
@@ -195,7 +195,7 @@ pub fn sidebar_frame() -> egui::Frame {
     egui::Frame {
         fill: BG_PANEL,
         inner_margin: Margin::same(12.0),
-        stroke: Stroke::new(0.5, BORDER),
+        stroke: Stroke::new(0.5_f32, BORDER),
         ..Default::default()
     }
 }
@@ -205,7 +205,7 @@ pub fn header_frame() -> egui::Frame {
     egui::Frame {
         fill: BG_PANEL,
         inner_margin: Margin::symmetric(20.0, 12.0),
-        stroke: Stroke::new(0.5, BORDER),
+        stroke: Stroke::new(0.5_f32, BORDER),
         ..Default::default()
     }
 }
@@ -235,7 +235,7 @@ pub fn subtle_button(text: &str) -> egui::Button<'_> {
             .size(12.0),
     )
     .fill(Color32::TRANSPARENT)
-    .stroke(Stroke::new(1.0, BORDER_LIGHT))
+    .stroke(Stroke::new(1.0_f32, BORDER_LIGHT))
     .rounding(6.0)
     .min_size(egui::vec2(0.0, 30.0))
 }
@@ -248,7 +248,7 @@ pub fn danger_button(text: &str) -> egui::Button<'_> {
             .size(12.0),
     )
     .fill(Color32::TRANSPARENT)
-    .stroke(Stroke::new(1.0, Color32::from_rgb(100, 45, 45)))
+    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(100, 45, 45)))
     .rounding(6.0)
     .min_size(egui::vec2(0.0, 30.0))
 }

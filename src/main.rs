@@ -1,17 +1,13 @@
-#[allow(dead_code)]
+#![allow(dead_code)]
+#![allow(clippy::type_complexity, clippy::too_many_arguments)]
+
 mod protocol;
-#[allow(dead_code)]
 mod crypto;
 mod network;
 mod storage;
 mod ui;
 
 use std::sync::{mpsc, Arc, Mutex};
-
-#[cfg(target_os = "linux")]
-use gtk::prelude::*;
-#[cfg(target_os = "linux")]
-use gtk;
 
 fn main() {
     env_logger::init();

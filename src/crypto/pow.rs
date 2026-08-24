@@ -41,9 +41,9 @@ pub fn do_pow(payload: &[u8], target: u64) -> u64 {
     loop {
         let mut hasher = Sha512::new();
         hasher.update(nonce.to_be_bytes());
-        hasher.update(&initial_hash);
+        hasher.update(initial_hash);
         let first_hash = hasher.finalize();
-        let result_hash = Sha512::digest(&first_hash);
+        let result_hash = Sha512::digest(first_hash);
 
         let trial_value = u64::from_be_bytes([
             result_hash[0],
@@ -88,9 +88,9 @@ pub fn check_pow(full_payload: &[u8], target: u64) -> bool {
 
     let mut hasher = Sha512::new();
     hasher.update(nonce.to_be_bytes());
-    hasher.update(&initial_hash);
+    hasher.update(initial_hash);
     let first_hash = hasher.finalize();
-    let result_hash = Sha512::digest(&first_hash);
+    let result_hash = Sha512::digest(first_hash);
 
     let trial_value = u64::from_be_bytes([
         result_hash[0],
@@ -113,7 +113,7 @@ fn try_nonce(nonce: u64, initial_hash: &[u8; 64]) -> u64 {
     hasher.update(nonce.to_be_bytes());
     hasher.update(initial_hash.as_slice());
     let first_hash = hasher.finalize();
-    let result_hash = Sha512::digest(&first_hash);
+    let result_hash = Sha512::digest(first_hash);
     u64::from_be_bytes([
         result_hash[0], result_hash[1], result_hash[2], result_hash[3],
         result_hash[4], result_hash[5], result_hash[6], result_hash[7],
@@ -146,7 +146,6 @@ where
             let total_attempts = Arc::clone(&total_attempts);
             let on_progress = Arc::clone(&on_progress);
             let cancelled = Arc::clone(&cancelled);
-            let initial_hash = initial_hash;
 
             s.spawn(move || {
                 let mut nonce = thread_id as u64;
@@ -165,7 +164,7 @@ where
                     nonce = nonce.wrapping_add(step);
                     local_count += 1;
 
-                    if local_count % 100_000 == 0 {
+                    if local_count.is_multiple_of(100_000) {
                         let total = total_attempts.fetch_add(100_000, Ordering::Relaxed) + 100_000;
                         // Only one thread reports progress (thread 0)
                         if thread_id == 0 {

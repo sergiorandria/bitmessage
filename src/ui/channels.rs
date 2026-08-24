@@ -129,7 +129,7 @@ fn render_join_channel_dialog(app: &mut BitmessageApp, ui: &mut egui::Ui) {
         inner_margin: egui::Margin::symmetric(20.0, 16.0),
         rounding: egui::Rounding::same(10.0),
         outer_margin: egui::Margin::symmetric(16.0, 8.0),
-        stroke: egui::Stroke::new(1.0, theme::ACCENT_MUTED),
+        stroke: egui::Stroke::new(1.0_f32, theme::ACCENT_MUTED),
         ..Default::default()
     }
     .show(ui, |ui| {
@@ -278,7 +278,7 @@ fn render_add_subscription_dialog(app: &mut BitmessageApp, ui: &mut egui::Ui) {
         inner_margin: egui::Margin::symmetric(20.0, 16.0),
         rounding: egui::Rounding::same(10.0),
         outer_margin: egui::Margin::symmetric(16.0, 8.0),
-        stroke: egui::Stroke::new(1.0, theme::ACCENT_MUTED),
+        stroke: egui::Stroke::new(1.0_f32, theme::ACCENT_MUTED),
         ..Default::default()
     }
     .show(ui, |ui| {

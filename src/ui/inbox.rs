@@ -78,7 +78,7 @@ fn render_message_list(app: &mut BitmessageApp, ui: &mut egui::Ui, title: &str, 
         egui::Frame {
             fill: theme::BG_SURFACE,
             inner_margin: egui::Margin::symmetric(16.0, 8.0),
-            stroke: egui::Stroke::new(0.5, theme::ACCENT_MUTED),
+            stroke: egui::Stroke::new(0.5_f32, theme::ACCENT_MUTED),
             ..Default::default()
         }
         .show(ui, |ui| {
@@ -140,8 +140,8 @@ fn render_message_list(app: &mut BitmessageApp, ui: &mut egui::Ui, title: &str, 
                     }
                 } else {
                     // Mark as read (inbox only)
-                    if folder == "inbox" {
-                        if ui.add(theme::subtle_button(
+                    if folder == "inbox"
+                        && ui.add(theme::subtle_button(
                             &theme::icon_text(icon::CHECK, "Mark Read"),
                         )).clicked() {
                             let ids: Vec<i64> = app.selected_messages.iter().copied().collect();
@@ -153,7 +153,6 @@ fn render_message_list(app: &mut BitmessageApp, ui: &mut egui::Ui, title: &str, 
                             app.selected_messages.clear();
                             app.refresh_data();
                         }
-                    }
 
                     // Move to trash
                     if ui.add(theme::subtle_button(
@@ -272,7 +271,7 @@ fn render_message_row(
         fill: bg,
         inner_margin: egui::Margin::symmetric(16.0, 10.0),
         rounding: egui::Rounding::same(0.0),
-        stroke: egui::Stroke::new(0.5, theme::BORDER),
+        stroke: egui::Stroke::new(0.5_f32, theme::BORDER),
         ..Default::default()
     };
 
@@ -441,25 +440,23 @@ pub fn render_message_detail(app: &mut BitmessageApp, ui: &mut egui::Ui, msg_id:
                 }
 
                 // Undelete from trash
-                if msg.folder == "trash" {
-                    if ui.add(theme::subtle_button(&theme::icon_text(icon::BACK, "Restore"))).clicked() {
+                if msg.folder == "trash"
+                    && ui.add(theme::subtle_button(&theme::icon_text(icon::BACK, "Restore"))).clicked() {
                         if let Ok(db) = app.db.lock() {
                             let _ = db.untrash_message(msg_id);
                         }
                         app.refresh_data();
                         app.current_view = View::Inbox;
                     }
-                }
 
-                if msg.folder != "sent" {
-                    if ui.add(theme::subtle_button(&theme::icon_text(icon::REPLY, "Reply"))).clicked() {
+                if msg.folder != "sent"
+                    && ui.add(theme::subtle_button(&theme::icon_text(icon::REPLY, "Reply"))).clicked() {
                         app.compose.to = msg.from_address.clone();
                         app.compose.subject = format!("Re: {}", msg.subject);
                         app.compose.body.clear();
                         app.compose.is_broadcast = false;
                         app.current_view = View::Compose;
                     }
-                }
             });
         });
     });
@@ -474,7 +471,7 @@ pub fn render_message_detail(app: &mut BitmessageApp, ui: &mut egui::Ui, msg_id:
                 inner_margin: egui::Margin::symmetric(24.0, 20.0),
                 rounding: egui::Rounding::same(8.0),
                 outer_margin: egui::Margin::symmetric(16.0, 0.0),
-                stroke: egui::Stroke::new(0.5, theme::BORDER),
+                stroke: egui::Stroke::new(0.5_f32, theme::BORDER),
                 ..Default::default()
             }
             .show(ui, |ui| {
@@ -554,7 +551,7 @@ pub fn render_message_detail(app: &mut BitmessageApp, ui: &mut egui::Ui, msg_id:
                             fill: theme::BG_DARKEST,
                             inner_margin: egui::Margin::symmetric(12.0, 8.0),
                             rounding: egui::Rounding::same(6.0),
-                            stroke: egui::Stroke::new(0.5, theme::BORDER),
+                            stroke: egui::Stroke::new(0.5_f32, theme::BORDER),
                             ..Default::default()
                         }
                         .show(ui, |ui| {
@@ -599,8 +596,8 @@ pub fn render_message_detail(app: &mut BitmessageApp, ui: &mut egui::Ui, msg_id:
                                 });
 
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if att.status == "verified" {
-                                        if ui.add(theme::subtle_button(
+                                    if att.status == "verified"
+                                        && ui.add(theme::subtle_button(
                                             &theme::icon_text(icon::DOWNLOAD, "Save")
                                         )).clicked() {
                                             if let Some(path) = rfd::FileDialog::new()
@@ -614,7 +611,6 @@ pub fn render_message_detail(app: &mut BitmessageApp, ui: &mut egui::Ui, msg_id:
                                                 }
                                             }
                                         }
-                                    }
                                 });
                             });
                         });

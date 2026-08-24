@@ -72,7 +72,7 @@ fn render_contact_card(
         inner_margin: egui::Margin::symmetric(16.0, 12.0),
         rounding: egui::Rounding::same(8.0),
         outer_margin: egui::Margin::symmetric(16.0, 3.0),
-        stroke: egui::Stroke::new(0.5, theme::BORDER),
+        stroke: egui::Stroke::new(0.5_f32, theme::BORDER),
         ..Default::default()
     }
     .show(ui, |ui| {
@@ -140,7 +140,7 @@ fn render_add_contact_dialog(app: &mut BitmessageApp, ui: &mut egui::Ui) {
         inner_margin: egui::Margin::symmetric(20.0, 16.0),
         rounding: egui::Rounding::same(10.0),
         outer_margin: egui::Margin::symmetric(16.0, 8.0),
-        stroke: egui::Stroke::new(1.0, theme::ACCENT_MUTED),
+        stroke: egui::Stroke::new(1.0_f32, theme::ACCENT_MUTED),
         ..Default::default()
     }
     .show(ui, |ui| {

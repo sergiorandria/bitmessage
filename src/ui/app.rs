@@ -29,6 +29,7 @@ pub struct AttachedFile {
     pub data: Vec<u8>,
 }
 
+#[derive(Default)]
 pub struct ComposeState {
     pub to: String,
     pub from_idx: usize,
@@ -43,20 +44,6 @@ pub struct ComposeState {
     pub attached_file: Option<AttachedFile>,
 }
 
-impl Default for ComposeState {
-    fn default() -> Self {
-        Self {
-            to: String::new(),
-            from_idx: 0,
-            subject: String::new(),
-            body: String::new(),
-            is_broadcast: false,
-            body_cursor: None,
-            visual_mode: false,
-            attached_file: None,
-        }
-    }
-}
 
 pub struct BitmessageApp {
     // Data
@@ -499,7 +486,7 @@ impl BitmessageApp {
                         .fill(theme::BG_SURFACE)
                         .rounding(8.0)
                         .inner_margin(egui::Margin::symmetric(14.0, 10.0))
-                        .stroke(egui::Stroke::new(1.0, theme::BORDER_LIGHT))
+                        .stroke(egui::Stroke::new(1.0_f32, theme::BORDER_LIGHT))
                         .show(ui, |ui| {
                             ui.label(
                                 RichText::new(msg)
@@ -578,13 +565,12 @@ impl eframe::App for BitmessageApp {
         }
 
         // Intercept window close → minimize to tray instead
-        if ctx.input(|i| i.viewport().close_requested()) {
-            if self.tray.is_some() {
+        if ctx.input(|i| i.viewport().close_requested())
+            && self.tray.is_some() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                 self.minimized_to_tray = true;
             }
-        }
 
         ctx.request_repaint_after(std::time::Duration::from_secs(1));
 

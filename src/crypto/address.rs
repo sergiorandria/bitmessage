@@ -181,7 +181,7 @@ pub fn compute_ripe(signing_pubkey: &[u8; 64], encryption_pubkey: &[u8; 64]) -> 
     combined.extend_from_slice(encryption_pubkey);
 
     let sha_hash = Sha512::digest(&combined);
-    let ripe_hash = Ripemd160::digest(&sha_hash);
+    let ripe_hash = Ripemd160::digest(sha_hash);
 
     let mut result = [0u8; 20];
     result.copy_from_slice(&ripe_hash);

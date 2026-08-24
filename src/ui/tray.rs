@@ -165,8 +165,8 @@ fn build_icon(unread: i64, connected: bool) -> Icon {
     if unread > 0 {
         let badge_text = if unread > 99 { "99+".to_string() } else { unread.to_string() };
         let badge_r = if badge_text.len() > 2 { 10 } else if badge_text.len() > 1 { 9 } else { 8 };
-        let bcx = SIZE as i32 - badge_r as i32 - 1;
-        let bcy = badge_r as i32 + 1;
+        let bcx = SIZE as i32 - badge_r - 1;
+        let bcy = badge_r + 1;
 
         // Draw red circle
         for y in 0..SIZE {
@@ -174,7 +174,7 @@ fn build_icon(unread: i64, connected: bool) -> Icon {
                 let dx = x as i32 - bcx;
                 let dy = y as i32 - bcy;
                 let dist_sq = dx * dx + dy * dy;
-                let r_sq = (badge_r * badge_r) as i32;
+                let r_sq = badge_r * badge_r;
                 if dist_sq <= r_sq {
                     set_pixel(&mut rgba, SIZE, x, y, [220, 50, 50, 255]);
                 }
@@ -237,9 +237,9 @@ fn draw_digit(rgba: &mut [u8], size: usize, x: i32, y: i32, ch: char) {
         _ => &[0b00000; 7],
     };
 
-    for row in 0..7 {
+    for (row, row_bits) in bitmap.iter().enumerate() {
         for col in 0..5 {
-            if bitmap[row] & (1 << (4 - col)) != 0 {
+            if row_bits & (1 << (4 - col)) != 0 {
                 let px = x + col;
                 let py = y + row as i32;
                 if px >= 0 && py >= 0 {

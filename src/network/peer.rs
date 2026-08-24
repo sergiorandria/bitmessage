@@ -725,7 +725,7 @@ impl PeerManager {
         let mut peer_addrs: Vec<String> = self.peers.iter()
             .map(|p| format!("{}:{}", p.info.address, p.info.port))
             .collect();
-        peer_addrs.sort_by(|a, b| self.peer_score_value(b).cmp(&self.peer_score_value(a)));
+        peer_addrs.sort_by_key(|a| std::cmp::Reverse(self.peer_score_value(a)));
 
         let now_ts = unix_time();
         let mut requests_per_peer: HashMap<String, Vec<InventoryVector>> = HashMap::new();
@@ -2495,12 +2495,9 @@ impl PeerManager {
                         let mut subj = String::new();
                         let mut bod = String::new();
                         for part in &ext.parts {
-                            match part {
-                                crate::protocol::objects::MessagePart::Text { subject: s, body: b } => {
-                                    subj = s.clone();
-                                    bod = b.clone();
-                                }
-                                _ => {} // File parts handled below
+                            if let crate::protocol::objects::MessagePart::Text { subject: s, body: b } = part {
+                                subj = s.clone();
+                                bod = b.clone();
                             }
                         }
                         (subj, bod)

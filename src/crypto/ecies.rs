@@ -212,10 +212,10 @@ pub fn decrypt(secret_key: &SecretKey, data: &[u8]) -> Result<Vec<u8>, EciesErro
         .map_err(|_| EciesError::HmacMismatch)?;
 
     // AES-256-CBC decrypt
-    let mut ct = payload.ciphertext;
+    let ct = payload.ciphertext;
     let plaintext = Aes256CbcDec::new_from_slices(key_e, &payload.iv)
         .map_err(|_| EciesError::InvalidKey("AES key init failed".into()))?
-        .decrypt_padded_vec_mut::<Pkcs7>(&mut ct)
+        .decrypt_padded_vec_mut::<Pkcs7>(&ct)
         .map_err(|_| EciesError::DecryptionFailed)?;
 
     Ok(plaintext)

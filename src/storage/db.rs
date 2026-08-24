@@ -1,3 +1,5 @@
+#![allow(clippy::type_complexity, clippy::too_many_arguments)]
+
 use rusqlite::{Connection, params};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -380,7 +382,7 @@ impl Database {
             old_combined.extend_from_slice(sign_arr);
             old_combined.extend_from_slice(enc_arr);
             let old_sha = Sha512::digest(&old_combined);
-            let old_ripe_hash = Ripemd160::digest(&old_sha);
+            let old_ripe_hash = Ripemd160::digest(old_sha);
             let mut old_ripe = [0u8; 20];
             old_ripe.copy_from_slice(&old_ripe_hash);
             let old_address = address::encode_address(addr_ver as u64, stream as u64, &old_ripe);
