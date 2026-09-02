@@ -1861,13 +1861,15 @@ impl PeerManager {
                         }
                     }
 
-                    // Batch DB lookup — single lock, single query per 500 hashes
+                    // Batch DB lookup — block_in_place avoids stalling tokio reactor under flood
                     let existing = if !to_check.is_empty() {
-                        if let Ok(db) = self.db.lock() {
-                            db.has_inventory_batch(&to_check)
-                        } else {
-                            std::collections::HashSet::new()
-                        }
+                        tokio::task::block_in_place(|| {
+                            if let Ok(db) = self.db.lock() {
+                                db.has_inventory_batch(&to_check)
+                            } else {
+                                std::collections::HashSet::new()
+                            }
+                        })
                     } else {
                         std::collections::HashSet::new()
                     };
@@ -2013,33 +2015,34 @@ impl PeerManager {
             return;
         }
 
-        // Store in inventory and check state (dedup + processed check)
+        // Store in inventory and check state (dedup + processed check) — block_in_place avoids reactor stall
         let inv_hash = InventoryVector::from_object_data(data);
-        let (is_new, already_processed) = if let Ok(db) = self.db.lock() {
-            if db.has_inventory(&inv_hash.hash) {
-                // Already in inventory — check if it was processed
-                (false, db.is_inventory_processed(&inv_hash.hash))
-            } else {
-                let _ = db.store_inventory(
-                    &inv_hash.hash,
-                    header.object_type,
-                    header.stream_number,
-                    data,
-                    header.expires_time,
-                );
-                // Check if this object is an ACK for one of our sent messages
-                if db.check_ack_received(&inv_hash.to_hex()) {
-                    log::info!("ACK received for sent message (hash: {})", inv_hash.to_hex());
-                    self.send_event(NetworkEvent::StatusUpdate(
-                        "Message delivery confirmed (ACK received)".into(),
-                    ));
+        let inv_hex = inv_hash.to_hex();
+        let (is_new, already_processed, ack_found) = tokio::task::block_in_place(|| {
+            if let Ok(db) = self.db.lock() {
+                if db.has_inventory(&inv_hash.hash) {
+                    (false, db.is_inventory_processed(&inv_hash.hash), false)
+                } else {
+                    let _ = db.store_inventory(
+                        &inv_hash.hash,
+                        header.object_type,
+                        header.stream_number,
+                        data,
+                        header.expires_time,
+                    );
+                    let ack = db.check_ack_received(&inv_hex);
+                    (true, false, ack)
                 }
-                (true, false)
+            } else {
+                (false, false, false)
             }
-        } else {
-            // DB lock failed — still try to process (don't skip)
-            (false, false)
-        };
+        });
+        if ack_found {
+            log::info!("ACK received for sent message (hash: {})", inv_hex);
+            self.send_event(NetworkEvent::StatusUpdate(
+                "Message delivery confirmed (ACK received)".into(),
+            ));
+        }
 
         // Relay to peers only if new
         if is_new {

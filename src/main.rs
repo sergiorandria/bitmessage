@@ -7,11 +7,12 @@ mod network;
 mod storage;
 mod ui;
 
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 
 fn main() {
     env_logger::init();
 
+    // GTK must init before tokio runtime on Linux (prevents thread contention)
     #[cfg(target_os = "linux")]
     {
         gtk::init().expect("Failed to initialize GTK");
@@ -21,11 +22,17 @@ fn main() {
         storage::Database::new().expect("Failed to initialize database"),
     ));
 
-    let (cmd_tx, cmd_rx) = mpsc::channel();
-    let (event_tx, event_rx) = mpsc::channel();
+    // Use tokio mpsc for network commands (bounded, async-friendly)
+    // Keep std mpsc for UI events polled via try_recv + request_repaint (bridge in PeerManager)
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let (event_tx, event_rx) = std::sync::mpsc::channel();
 
     let runtime = Arc::new(
-        tokio::runtime::Runtime::new().expect("Failed to create tokio runtime"),
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("bitmessage-tokio")
+            .build()
+            .expect("Failed to create tokio runtime"),
     );
 
     let net_db = db.clone();

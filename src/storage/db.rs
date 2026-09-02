@@ -853,12 +853,12 @@ impl Database {
     pub fn has_inventory(&self, hash: &[u8]) -> bool {
         self.conn
             .query_row(
-                "SELECT COUNT(*) FROM inventory WHERE hash = ?1",
+                "SELECT EXISTS(SELECT 1 FROM inventory WHERE hash = ?1)",
                 params![hash],
                 |row| row.get::<_, i64>(0),
             )
             .unwrap_or(0)
-            > 0
+            != 0
     }
 
     /// Batch check: returns a set of hashes that already exist in inventory.
