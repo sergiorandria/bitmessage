@@ -612,7 +612,7 @@ impl PeerManager {
     }
 
     /// Cleanup expired inventory and pubkeys (also enforces size cap)
-    fn cleanup_expired(&self) {
+    fn cleanup_expired(&mut self) {
         if let Ok(db) = self.db.lock() {
             let inv_deleted = db.cleanup_expired_inventory().unwrap_or(0);
             let pruned = db.prune_oldest_inventory(Database::MAX_INVENTORY_ITEMS).unwrap_or(0);
@@ -621,9 +621,13 @@ impl PeerManager {
             if inv_deleted + pruned + pk_deleted + node_deleted > 0 {
                 log::info!("Cleanup: {inv_deleted} expired inv, {pruned} pruned inv, {pk_deleted} pubkeys, {node_deleted} nodes");
             }
-            // Evict stale rate-limit windows (older than 60s)
-            // Done lazily in check_rate_limit; also clean here periodically
         }
+        // Evict stale rate-limit entries (>60s old) to bound memory
+        let now = unix_time();
+        self.rate_limits.retain(|_, windows| {
+            windows.iter().any(|(ts, _)| now.saturating_sub(*ts) < 60)
+        });
+        // Also prune seen_inv/missing_objects via existing caps; rate limiter now bounded
     }
 
     /// Retry sending queued messages (e.g., after pubkey arrives)
@@ -944,10 +948,16 @@ impl PeerManager {
                 let header = match MessageHeader::decode(&mut std::io::Cursor::new(header_data)) {
                     Ok(h) => h,
                     Err(_) => {
-                        pos += 1;
+                        // Discard whole header on bad magic to avoid byte-by-byte scan DoS
+                        pos += HEADER_SIZE;
                         continue;
                     }
                 };
+                if header.payload_len as usize > MAX_PAYLOAD_SIZE {
+                    log::warn!("Peer {addr} sent oversized payload {}, disconnecting", header.payload_len);
+                    let _ = tx.send(PeerIncoming::Disconnected(addr)).await;
+                    return;
+                }
 
                 let msg_end = pos + HEADER_SIZE + header.payload_len as usize;
                 if msg_end > total_read {

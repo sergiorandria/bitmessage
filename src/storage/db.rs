@@ -1,4 +1,4 @@
-#![allow(clippy::type_complexity, clippy::too_many_arguments)]
+#![allow(clippy::type_complexity, clippy::too_many_arguments, clippy::suspicious_open_options)]
 
 use rusqlite::{Connection, params};
 use std::collections::HashSet;
@@ -142,11 +142,31 @@ impl Database {
     pub fn new() -> Result<Self, DbError> {
         let path = Self::db_path();
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
             #[cfg(unix)]
             {
+                use std::os::unix::fs::DirBuilderExt;
+                let mut builder = std::fs::DirBuilder::new();
+                builder.mode(0o700);
+                builder.recursive(true);
+                let _ = builder.create(parent);
+                // Ensure correct perms even if dir existed (chmod)
                 use std::os::unix::fs::PermissionsExt;
                 let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+            }
+            #[cfg(not(unix))]
+            {
+                std::fs::create_dir_all(parent)?;
+            }
+            // Atomically ensure DB file has 0o600 on creation (TOCTOU-safe)
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                let _ = std::fs::OpenOptions::new()
+                    .create(true)
+                    .read(true)
+                    .write(true)
+                    .mode(0o600)
+                    .open(&path);
             }
         }
         let conn = Connection::open(&path)?;
@@ -307,6 +327,9 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_messages_folder ON messages(folder);
             CREATE INDEX IF NOT EXISTS idx_inventory_expires ON inventory(expires_time);
             CREATE INDEX IF NOT EXISTS idx_pubkeys_expires ON pubkeys(expires_time);
+            CREATE INDEX IF NOT EXISTS idx_messages_status_ack ON messages(status, ack_hash);
+            CREATE INDEX IF NOT EXISTS idx_inventory_type_processed ON inventory(object_type, processed);
+            CREATE INDEX IF NOT EXISTS idx_inventory_stream ON inventory(stream_number);
             ",
         )?;
 
@@ -475,7 +498,9 @@ impl Database {
                 created_at: row.get(12)?,
             })
         })?;
-        let mut identities: Vec<StoredIdentity> = rows.filter_map(|r| r.ok()).collect();
+        let mut identities: Vec<StoredIdentity> = rows
+            .filter_map(|r| r.map_err(|e| log::warn!("DB identities row error: {e}")).ok())
+            .collect();
         // Auto-decrypt private keys in memory if session key is available
         for id in &mut identities {
             id.signing_key = self.decrypt_key_if_needed(&id.signing_key);
@@ -584,7 +609,9 @@ impl Database {
                 created_at: row.get(10)?,
             })
         })?;
-        let mut messages: Vec<StoredMessage> = rows.filter_map(|r| r.ok()).collect();
+        let mut messages: Vec<StoredMessage> = rows
+            .filter_map(|r| r.map_err(|e| log::warn!("DB messages row error: {e}")).ok())
+            .collect();
         // Decrypt encrypted message fields
         for msg in &mut messages {
             msg.subject = self.decrypt_text_if_needed(&msg.subject);
