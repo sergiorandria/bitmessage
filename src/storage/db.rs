@@ -906,17 +906,38 @@ impl Database {
         payload: &[u8],
         expires_time: u64,
     ) -> Result<(), DbError> {
-        // Enforce inventory size cap before insert (prune synchronously to bound disk)
-        // Cheap count check; prune only if near cap to avoid per-insert overhead.
-        if self.inventory_count().unwrap_or(0) >= Self::MAX_INVENTORY_ITEMS {
-            let _ = self.prune_oldest_inventory(Self::MAX_INVENTORY_ITEMS - 10_000);
-        }
+        // INSERT OR IGNORE exploits UNIQUE(hash) — no count-before-insert.
+        // Size cap enforced periodically via prune_oldest_inventory in cleanup_expired().
         let now = chrono::Utc::now().timestamp();
         self.conn.execute(
             "INSERT OR IGNORE INTO inventory (hash, object_type, stream_number, payload, expires_time, received_at, processed)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
             params![hash, object_type as i64, stream_number as i64, payload, expires_time as i64, now],
         )?;
+        Ok(())
+    }
+
+    /// Batch insert for inv flood: single transaction, no per-row count
+    pub fn store_inventory_batch(&self, items: &[(&[u8], u32, u64, &[u8], u64)]) -> Result<(), DbError> {
+        let now = chrono::Utc::now().timestamp();
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT OR IGNORE INTO inventory (hash, object_type, stream_number, payload, expires_time, received_at, processed)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
+            )?;
+            for (hash, obj_type, stream, payload, expires) in items {
+                let _ = stmt.execute(params![
+                    *hash,
+                    *obj_type as i64,
+                    *stream as i64,
+                    *payload,
+                    *expires as i64,
+                    now
+                ]);
+            }
+        }
+        tx.commit()?;
         Ok(())
     }
 
