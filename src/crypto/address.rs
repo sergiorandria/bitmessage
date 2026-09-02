@@ -3,7 +3,6 @@ use sha2::{Sha512, Digest};
 use ripemd::Ripemd160;
 use thiserror::Error;
 
-use crate::protocol::types::encode_varint;
 use super::keys::KeyPair;
 
 #[derive(Debug, Error)]
@@ -86,11 +85,16 @@ impl BitmessageAddress {
         let mut encryption_secret = None;
 
         // Find signing key: SHA-512(passphrase + varint(nonce)) until valid, bounded attempts
+        // Reuse hasher without per-iteration Vec alloc for varint
         const MAX_NONCE_ATTEMPTS: u64 = 1_000_000;
+        let mut varint_buf = Vec::with_capacity(9);
         for nonce in 0u64..MAX_NONCE_ATTEMPTS {
-            let mut data = passphrase_bytes.to_vec();
-            data.extend(encode_varint(nonce));
-            let hash = Sha512::digest(&data);
+            varint_buf.clear();
+            crate::protocol::types::append_varint(&mut varint_buf, nonce);
+            let mut hasher = Sha512::new();
+            hasher.update(passphrase_bytes);
+            hasher.update(&varint_buf);
+            let hash = hasher.finalize();
             let key_bytes = &hash[..32];
             if SecretKey::from_slice(key_bytes).is_ok() {
                 if signing_secret.is_none() {
@@ -197,13 +201,14 @@ impl BitmessageAddress {
 /// Compute RIPEMD-160(SHA-512(\x04 || signing_key || \x04 || encryption_key))
 /// Keys must include the 0x04 uncompressed point prefix for compatibility with PyBitmessage.
 pub fn compute_ripe(signing_pubkey: &[u8; 64], encryption_pubkey: &[u8; 64]) -> [u8; 20] {
-    let mut combined = Vec::with_capacity(130);
-    combined.push(0x04);
-    combined.extend_from_slice(signing_pubkey);
-    combined.push(0x04);
-    combined.extend_from_slice(encryption_pubkey);
+    // Use stack array to avoid Vec 130 alloc per call
+    let mut combined = [0u8; 130];
+    combined[0] = 0x04;
+    combined[1..65].copy_from_slice(signing_pubkey);
+    combined[65] = 0x04;
+    combined[66..130].copy_from_slice(encryption_pubkey);
 
-    let sha_hash = Sha512::digest(&combined);
+    let sha_hash = Sha512::digest(combined);
     let ripe_hash = Ripemd160::digest(sha_hash);
 
     let mut result = [0u8; 20];
@@ -213,8 +218,9 @@ pub fn compute_ripe(signing_pubkey: &[u8; 64], encryption_pubkey: &[u8; 64]) -> 
 
 /// Encode a Bitmessage address from version, stream, and ripe hash
 pub fn encode_address(version: u64, stream: u64, ripe: &[u8]) -> String {
-    let mut payload = encode_varint(version);
-    payload.extend(encode_varint(stream));
+    let mut payload = Vec::with_capacity(18);
+    crate::protocol::types::append_varint(&mut payload, version);
+    crate::protocol::types::append_varint(&mut payload, stream);
 
     // Strip leading zeros from ripe
     let ripe_trimmed = ripe
@@ -234,8 +240,9 @@ pub fn encode_address(version: u64, stream: u64, ripe: &[u8]) -> String {
 
 /// Compute tag for v4 addresses: bytes [32..64] of double-SHA-512(version || stream || ripe)
 pub fn compute_tag(version: u64, stream: u64, ripe: &[u8]) -> [u8; 32] {
-    let mut data = encode_varint(version);
-    data.extend(encode_varint(stream));
+    let mut data = Vec::with_capacity(38);
+    crate::protocol::types::append_varint(&mut data, version);
+    crate::protocol::types::append_varint(&mut data, stream);
     data.extend_from_slice(ripe);
 
     let h1 = Sha512::digest(&data);
@@ -253,8 +260,9 @@ pub fn compute_address_encryption_key(
     stream: u64,
     ripe: &[u8],
 ) -> ([u8; 32], [u8; 32]) {
-    let mut data = encode_varint(version);
-    data.extend(encode_varint(stream));
+    let mut data = Vec::with_capacity(38);
+    crate::protocol::types::append_varint(&mut data, version);
+    crate::protocol::types::append_varint(&mut data, stream);
     data.extend_from_slice(ripe);
 
     let h1 = Sha512::digest(&data);

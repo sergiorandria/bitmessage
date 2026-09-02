@@ -256,25 +256,26 @@ pub struct UnencryptedMessage {
 }
 
 impl UnencryptedMessage {
-    /// Encode for msg object (includes destination_ripe)
+    /// Encode for msg object (includes destination_ripe) — precise reserve
     pub fn encode_msg(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(256 + self.message.len());
-        buf.extend(encode_varint(self.sender_address_version));
-        buf.extend(encode_varint(self.sender_stream));
+        let cap = 4 + 4 + 128 + 9*5 + 20 + self.message.len() + self.ack_data.len() + 16;
+        let mut buf = Vec::with_capacity(cap);
+        append_varint(&mut buf, self.sender_address_version);
+        append_varint(&mut buf, self.sender_stream);
         buf.extend_from_slice(&self.behavior_bitfield.to_be_bytes());
         buf.extend_from_slice(&self.public_signing_key);
         buf.extend_from_slice(&self.public_encryption_key);
         if self.sender_address_version >= 3 {
-            buf.extend(encode_varint(self.nonce_trials_per_byte));
-            buf.extend(encode_varint(self.extra_bytes));
+            append_varint(&mut buf, self.nonce_trials_per_byte);
+            append_varint(&mut buf, self.extra_bytes);
         }
         if let Some(ripe) = &self.destination_ripe {
             buf.extend_from_slice(ripe);
         }
-        buf.extend(encode_varint(self.encoding));
-        buf.extend(encode_varint(self.message.len() as u64));
+        append_varint(&mut buf, self.encoding);
+        append_varint(&mut buf, self.message.len() as u64);
         buf.extend_from_slice(&self.message);
-        buf.extend(encode_varint(self.ack_data.len() as u64));
+        append_varint(&mut buf, self.ack_data.len() as u64);
         buf.extend_from_slice(&self.ack_data);
         // Signature will be appended after signing
         buf
@@ -282,18 +283,19 @@ impl UnencryptedMessage {
 
     /// Encode for broadcast object (no destination_ripe)
     pub fn encode_broadcast(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(256 + self.message.len());
-        buf.extend(encode_varint(self.sender_address_version));
-        buf.extend(encode_varint(self.sender_stream));
+        let cap = 4 + 4 + 128 + 9*4 + self.message.len() + 16;
+        let mut buf = Vec::with_capacity(cap);
+        append_varint(&mut buf, self.sender_address_version);
+        append_varint(&mut buf, self.sender_stream);
         buf.extend_from_slice(&self.behavior_bitfield.to_be_bytes());
         buf.extend_from_slice(&self.public_signing_key);
         buf.extend_from_slice(&self.public_encryption_key);
         if self.sender_address_version >= 3 {
-            buf.extend(encode_varint(self.nonce_trials_per_byte));
-            buf.extend(encode_varint(self.extra_bytes));
+            append_varint(&mut buf, self.nonce_trials_per_byte);
+            append_varint(&mut buf, self.extra_bytes);
         }
-        buf.extend(encode_varint(self.encoding));
-        buf.extend(encode_varint(self.message.len() as u64));
+        append_varint(&mut buf, self.encoding);
+        append_varint(&mut buf, self.message.len() as u64);
         buf.extend_from_slice(&self.message);
         // Signature will be appended after signing
         buf

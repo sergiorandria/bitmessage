@@ -72,20 +72,24 @@ impl From<u64> for Encoding {
 // --- Variable-length integer encoding (big-endian) ---
 
 pub fn encode_varint(value: u64) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(9);
+    append_varint(&mut buf, value);
+    buf
+}
+
+#[inline]
+pub fn append_varint(buf: &mut Vec<u8>, value: u64) {
     if value < 0xfd {
-        vec![value as u8]
+        buf.push(value as u8);
     } else if value <= 0xffff {
-        let mut buf = vec![0xfd];
+        buf.push(0xfd);
         buf.extend_from_slice(&(value as u16).to_be_bytes());
-        buf
     } else if value <= 0xffff_ffff {
-        let mut buf = vec![0xfe];
+        buf.push(0xfe);
         buf.extend_from_slice(&(value as u32).to_be_bytes());
-        buf
     } else {
-        let mut buf = vec![0xff];
+        buf.push(0xff);
         buf.extend_from_slice(&value.to_be_bytes());
-        buf
     }
 }
 
@@ -113,7 +117,8 @@ pub fn decode_varint<R: Read>(reader: &mut R) -> Result<u64> {
 }
 
 pub fn encode_var_str(s: &str) -> Vec<u8> {
-    let mut buf = encode_varint(s.len() as u64);
+    let mut buf = Vec::with_capacity(9 + s.len());
+    append_varint(&mut buf, s.len() as u64);
     buf.extend_from_slice(s.as_bytes());
     buf
 }

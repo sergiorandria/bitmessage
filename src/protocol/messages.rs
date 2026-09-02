@@ -22,6 +22,11 @@ impl MessageHeader {
 
     pub fn encode(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(HEADER_SIZE);
+        self.encode_into(&mut buf);
+        buf
+    }
+
+    pub fn encode_into(&self, buf: &mut Vec<u8>) {
         buf.extend_from_slice(&MAGIC.to_be_bytes());
         let mut cmd = [0u8; 12];
         let cmd_bytes = self.command.as_bytes();
@@ -30,7 +35,6 @@ impl MessageHeader {
         buf.extend_from_slice(&cmd);
         buf.extend_from_slice(&self.payload_len.to_be_bytes());
         buf.extend_from_slice(&self.checksum);
-        buf
     }
 
     pub fn decode<R: Read>(reader: &mut R) -> Result<Self> {
@@ -76,10 +80,11 @@ impl MessageHeader {
     }
 }
 
-/// Encode a full message: header + payload
+/// Encode a full message: header + payload — single allocation
 pub fn encode_message(command: &str, payload: &[u8]) -> Vec<u8> {
     let header = MessageHeader::new(command, payload);
-    let mut msg = header.encode();
+    let mut msg = Vec::with_capacity(HEADER_SIZE + payload.len());
+    header.encode_into(&mut msg);
     msg.extend_from_slice(payload);
     msg
 }
