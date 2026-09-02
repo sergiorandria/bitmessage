@@ -862,27 +862,31 @@ impl Database {
     }
 
     /// Batch check: returns a set of hashes that already exist in inventory.
+    /// Uses chunked `WHERE hash IN (?,...,?)` to avoid temp table + N round trips.
+    /// SQLite default max bind vars = 999, chunk to 500 for safety.
     pub fn has_inventory_batch(&self, hashes: &[[u8; 32]]) -> HashSet<[u8; 32]> {
         let mut existing = HashSet::new();
-        // Use a temporary table approach for efficiency
-        let _ = self.conn.execute("CREATE TEMP TABLE IF NOT EXISTS _check_hashes (h BLOB)", []);
-        let _ = self.conn.execute("DELETE FROM _check_hashes", []);
-        {
-            let mut stmt = match self.conn.prepare("INSERT INTO _check_hashes VALUES (?1)") {
-                Ok(s) => s,
-                Err(_) => return existing,
-            };
-            for h in hashes {
-                let _ = stmt.execute(params![&h[..]]);
-            }
+        if hashes.is_empty() {
+            return existing;
         }
-        let mut stmt = match self.conn.prepare(
-            "SELECT i.hash FROM inventory i INNER JOIN _check_hashes c ON i.hash = c.h"
-        ) {
-            Ok(s) => s,
-            Err(_) => return existing,
-        };
-        if let Ok(rows) = stmt.query_map([], |row| row.get::<_, Vec<u8>>(0)) {
+        for chunk in hashes.chunks(500) {
+            let placeholders = std::iter::repeat("?")
+                .take(chunk.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!("SELECT hash FROM inventory WHERE hash IN ({placeholders})");
+            let mut stmt = match self.conn.prepare(&sql) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            // Collect chunk slices into owned Vec to satisfy borrow checker for params_from_iter
+            let chunk_vec: Vec<&[u8]> = chunk.iter().map(|h| h.as_slice()).collect();
+            let rows = match stmt.query_map(rusqlite::params_from_iter(chunk_vec), |row| {
+                row.get::<_, Vec<u8>>(0)
+            }) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
             for row in rows.flatten() {
                 if row.len() == 32 {
                     let mut arr = [0u8; 32];
