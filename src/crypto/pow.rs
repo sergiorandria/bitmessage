@@ -152,12 +152,14 @@ where
                 let step = num_threads as u64;
                 let mut local_count: u64 = 0;
 
-                while !found.load(Ordering::Relaxed) && !cancelled.load(Ordering::Relaxed) {
+                while !found.load(Ordering::Acquire) && !cancelled.load(Ordering::Acquire) {
                     let trial_value = try_nonce(nonce, &initial_hash);
 
                     if trial_value <= target {
-                        found.store(true, Ordering::Relaxed);
-                        result_nonce.store(nonce, Ordering::Relaxed);
+                        // Claim winner via compare_exchange — only first thread succeeds
+                        if found.compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+                            result_nonce.store(nonce, Ordering::Release);
+                        }
                         return;
                     }
 
@@ -165,12 +167,10 @@ where
                     local_count += 1;
 
                     if local_count.is_multiple_of(100_000) {
-                        let total = total_attempts.fetch_add(100_000, Ordering::Relaxed) + 100_000;
-                        // Only one thread reports progress (thread 0)
-                        if thread_id == 0 {
-                            if let Ok(mut cb) = on_progress.lock() {
-                                cb(total);
-                            }
+                        let total = total_attempts.fetch_add(100_000, Ordering::AcqRel) + 100_000;
+                        // Any thread can report progress; use try_lock to avoid contention
+                        if let Ok(mut cb) = on_progress.try_lock() {
+                            cb(total);
                         }
                     }
                 }
@@ -178,10 +178,12 @@ where
         }
     });
 
-    if cancelled.load(Ordering::Relaxed) {
+    if cancelled.load(Ordering::Acquire) {
         None
+    } else if found.load(Ordering::Acquire) {
+        Some(result_nonce.load(Ordering::Acquire))
     } else {
-        Some(result_nonce.load(Ordering::Relaxed))
+        None
     }
 }
 
