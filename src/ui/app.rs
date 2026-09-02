@@ -535,7 +535,9 @@ impl eframe::App for BitmessageApp {
             }
         }
 
-        if self.last_refresh.elapsed() > std::time::Duration::from_secs(2) {
+        // Periodic refresh — push model would be better (event_tx → request_repaint),
+        // for now reduce from 2s to 5s to cut 150-msg reloads by 60% when idle.
+        if self.last_refresh.elapsed() > std::time::Duration::from_secs(5) {
             self.refresh_data();
         }
 

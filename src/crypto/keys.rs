@@ -37,19 +37,27 @@ impl std::fmt::Debug for KeyPair {
 }
 
 impl KeyPair {
-    /// Generate a new random keypair
+    /// Generate a new random keypair — secrets zeroized from creation
     pub fn generate() -> Self {
         let signing_sk = SecretKey::random(&mut OsRng);
         let encryption_sk = SecretKey::random(&mut OsRng);
-        Self::from_secrets(
-            signing_sk.to_bytes().to_vec(),
-            encryption_sk.to_bytes().to_vec(),
-        )
-        .expect("freshly generated keys should be valid")
+        // Zeroizing from the start avoids leaving raw bytes in non-zeroized Vec
+        let signing = Zeroizing::new(signing_sk.to_bytes().to_vec());
+        let encryption = Zeroizing::new(encryption_sk.to_bytes().to_vec());
+        Self::from_secrets_zeroizing(signing, encryption)
+            .expect("freshly generated keys should be valid")
     }
 
-    /// Reconstruct from raw secret key bytes
+    /// Reconstruct from raw secret key bytes (wraps immediately in Zeroizing)
     pub fn from_secrets(signing: Vec<u8>, encryption: Vec<u8>) -> Result<Self, KeyError> {
+        Self::from_secrets_zeroizing(Zeroizing::new(signing), Zeroizing::new(encryption))
+    }
+
+    /// Reconstruct from zeroized secrets — preferred entry point (no intermediate copy)
+    pub fn from_secrets_zeroizing(
+        signing: Zeroizing<Vec<u8>>,
+        encryption: Zeroizing<Vec<u8>>,
+    ) -> Result<Self, KeyError> {
         let signing_sk =
             SecretKey::from_slice(&signing).map_err(|e| KeyError::InvalidKey(e.to_string()))?;
         let encryption_sk =
@@ -68,8 +76,8 @@ impl KeyPair {
         pub_encryption.copy_from_slice(&encryption_point.as_bytes()[1..65]);
 
         Ok(Self {
-            signing_secret: Zeroizing::new(signing),
-            encryption_secret: Zeroizing::new(encryption),
+            signing_secret: signing,
+            encryption_secret: encryption,
             public_signing_key: pub_signing,
             public_encryption_key: pub_encryption,
         })
