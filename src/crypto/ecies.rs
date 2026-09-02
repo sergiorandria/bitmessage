@@ -35,23 +35,20 @@ pub enum EciesError {
 pub struct EncryptedPayload {
     pub iv: [u8; 16],
     pub curve_type: u16,
-    pub public_key_x: Vec<u8>,
-    pub public_key_y: Vec<u8>,
+    pub public_key_x: [u8; 32],
+    pub public_key_y: [u8; 32],
     pub ciphertext: Vec<u8>,
     pub mac: [u8; 32],
 }
 
 impl EncryptedPayload {
     pub fn serialize(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(
-            16 + 2 + 2 + self.public_key_x.len() + 2 + self.public_key_y.len()
-                + self.ciphertext.len() + 32,
-        );
+        let mut buf = Vec::with_capacity(16 + 2 + 2 + 32 + 2 + 32 + self.ciphertext.len() + 32);
         buf.extend_from_slice(&self.iv);
         buf.extend_from_slice(&self.curve_type.to_be_bytes());
-        buf.extend_from_slice(&(self.public_key_x.len() as u16).to_be_bytes());
+        buf.extend_from_slice(&32u16.to_be_bytes());
         buf.extend_from_slice(&self.public_key_x);
-        buf.extend_from_slice(&(self.public_key_y.len() as u16).to_be_bytes());
+        buf.extend_from_slice(&32u16.to_be_bytes());
         buf.extend_from_slice(&self.public_key_y);
         buf.extend_from_slice(&self.ciphertext);
         buf.extend_from_slice(&self.mac);
@@ -83,7 +80,8 @@ impl EncryptedPayload {
         if pos + x_len > data.len() {
             return Err(EciesError::MalformedCiphertext);
         }
-        let public_key_x = data[pos..pos + x_len].to_vec();
+        let mut public_key_x = [0u8; 32];
+        public_key_x.copy_from_slice(&data[pos..pos + x_len]);
         pos += x_len;
 
         if pos + 2 > data.len() {
@@ -97,7 +95,8 @@ impl EncryptedPayload {
         if pos + y_len > data.len() {
             return Err(EciesError::MalformedCiphertext);
         }
-        let public_key_y = data[pos..pos + y_len].to_vec();
+        let mut public_key_y = [0u8; 32];
+        public_key_y.copy_from_slice(&data[pos..pos + y_len]);
         pos += y_len;
 
         if data.len() < pos + 32 {
@@ -156,20 +155,16 @@ pub fn encrypt(recipient_pubkey: &PublicKey, plaintext: &[u8]) -> Result<Vec<u8>
     let pk_x = pad_to_32(point.x().map(|x| x.as_slice()).unwrap_or(&[]));
     let pk_y = pad_to_32(point.y().map(|y| y.as_slice()).unwrap_or(&[]));
 
-    // Build data for HMAC: IV || curve_type || x_len || x || y_len || y || ciphertext
-    let mut hmac_data = Vec::new();
-    hmac_data.extend_from_slice(&iv);
-    hmac_data.extend_from_slice(&CURVE_TYPE.to_be_bytes());
-    hmac_data.extend_from_slice(&(pk_x.len() as u16).to_be_bytes());
-    hmac_data.extend_from_slice(&pk_x);
-    hmac_data.extend_from_slice(&(pk_y.len() as u16).to_be_bytes());
-    hmac_data.extend_from_slice(&pk_y);
-    hmac_data.extend_from_slice(&ciphertext);
-
-    // HMAC-SHA256
+    // HMAC-SHA256 over IV || curve_type || x_len || x || y_len || y || ciphertext (no heap alloc)
     let mut mac = HmacSha256::new_from_slice(key_m)
         .map_err(|_| EciesError::InvalidKey("HMAC key init failed".into()))?;
-    mac.update(&hmac_data);
+    mac.update(&iv);
+    mac.update(&CURVE_TYPE.to_be_bytes());
+    mac.update(&32u16.to_be_bytes());
+    mac.update(&pk_x);
+    mac.update(&32u16.to_be_bytes());
+    mac.update(&pk_y);
+    mac.update(&ciphertext);
     let mac_bytes: [u8; 32] = mac.finalize().into_bytes().into();
 
     let payload = EncryptedPayload {
@@ -188,12 +183,11 @@ pub fn encrypt(recipient_pubkey: &PublicKey, plaintext: &[u8]) -> Result<Vec<u8>
 pub fn decrypt(secret_key: &SecretKey, data: &[u8]) -> Result<Vec<u8>, EciesError> {
     let payload = EncryptedPayload::deserialize(data)?;
 
-    // Reconstruct ephemeral public key R from x, y components
-    let mut uncompressed = vec![0x04];
-    let x_padded = pad_to_32(&payload.public_key_x);
-    let y_padded = pad_to_32(&payload.public_key_y);
-    uncompressed.extend_from_slice(&x_padded);
-    uncompressed.extend_from_slice(&y_padded);
+    // Reconstruct ephemeral public key R from x, y components — stack alloc, no Vec
+    let mut uncompressed = [0u8; 65];
+    uncompressed[0] = 0x04;
+    uncompressed[1..33].copy_from_slice(&payload.public_key_x);
+    uncompressed[33..65].copy_from_slice(&payload.public_key_y);
 
     let ephemeral_pk = PublicKey::from_sec1_bytes(&uncompressed)
         .map_err(|e| EciesError::InvalidKey(e.to_string()))?;
@@ -207,19 +201,16 @@ pub fn decrypt(secret_key: &SecretKey, data: &[u8]) -> Result<Vec<u8>, EciesErro
     let key_e = &h[..32];
     let key_m = &h[32..];
 
-    // Verify HMAC
-    let mut hmac_data = Vec::new();
-    hmac_data.extend_from_slice(&payload.iv);
-    hmac_data.extend_from_slice(&payload.curve_type.to_be_bytes());
-    hmac_data.extend_from_slice(&(payload.public_key_x.len() as u16).to_be_bytes());
-    hmac_data.extend_from_slice(&payload.public_key_x);
-    hmac_data.extend_from_slice(&(payload.public_key_y.len() as u16).to_be_bytes());
-    hmac_data.extend_from_slice(&payload.public_key_y);
-    hmac_data.extend_from_slice(&payload.ciphertext);
-
+    // Verify HMAC — incremental updates, no heap alloc
     let mut mac = HmacSha256::new_from_slice(key_m)
         .map_err(|_| EciesError::InvalidKey("HMAC key init failed".into()))?;
-    mac.update(&hmac_data);
+    mac.update(&payload.iv);
+    mac.update(&payload.curve_type.to_be_bytes());
+    mac.update(&32u16.to_be_bytes());
+    mac.update(&payload.public_key_x);
+    mac.update(&32u16.to_be_bytes());
+    mac.update(&payload.public_key_y);
+    mac.update(&payload.ciphertext);
     mac.verify_slice(&payload.mac)
         .map_err(|_| EciesError::HmacMismatch)?;
 
@@ -233,19 +224,19 @@ pub fn decrypt(secret_key: &SecretKey, data: &[u8]) -> Result<Vec<u8>, EciesErro
     Ok(plaintext)
 }
 
-/// Left-pad bytes to 32 bytes with zeros; input must be <=32, otherwise truncate is error but we handle strictly
-fn pad_to_32(input: &[u8]) -> Vec<u8> {
+/// Left-pad bytes to 32 bytes with zeros; input must be <=32
+#[inline]
+fn pad_to_32(input: &[u8]) -> [u8; 32] {
+    let mut out = [0u8; 32];
     if input.len() == 32 {
-        return input.to_vec();
-    }
-    if input.len() > 32 {
-        // Truncation should not happen if caller validates; return error case as truncated tail for compat but log
+        out.copy_from_slice(input);
+    } else if input.len() > 32 {
         log::warn!("pad_to_32 received oversized input {}", input.len());
-        return input[input.len() - 32..].to_vec();
+        out.copy_from_slice(&input[input.len() - 32..]);
+    } else {
+        out[32 - input.len()..].copy_from_slice(input);
     }
-    let mut padded = vec![0u8; 32 - input.len()];
-    padded.extend_from_slice(input);
-    padded
+    out
 }
 
 #[cfg(test)]
